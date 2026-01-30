@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  server:
+    build: ./server
+    container_name: socket-server
+    ports:
+      - "5000:5000"
+
+  client:
+    build: ./client
+    container_name: socket-client
+    depends_on:
+      - server
+    volumes:
+      - ./dataset:/data/dataset
