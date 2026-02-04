@@ -66,8 +66,6 @@ def establish_connection(server_host, server_port):
                 raise RuntimeError(f"Expected ASSIGN_ID, got {msg}")
 
             client_id_assigned = msg["payload"]["client_id"]
-            print(f"[CLIENT] Assigned ID: {client_id_assigned}")
-            print("[Client] Connected to server")
             break
         except ConnectionRefusedError:
             print("[Client] Waiting for server")
@@ -76,6 +74,55 @@ def establish_connection(server_host, server_port):
     return sock
 
 sock = establish_connection(server_host, server_port)
+
+
+model = None
+optimizer = None
+
+class P3SLModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.layers = nn.ModuleList([
+            # ----- Block 0 -----
+            nn.Conv2d(1, 32, 3),   # L0
+            nn.ReLU(),             # L1
+            nn.Conv2d(32, 32, 3),  # L2
+            nn.ReLU(),             # L3
+            nn.MaxPool2d(2),       # L4
+
+            # ----- Block 1 -----
+            nn.Conv2d(32, 64, 3),  # L5
+            nn.ReLU(),             # L6
+            nn.Conv2d(64, 64, 3),  # L7
+            nn.ReLU(),             # L8
+            nn.MaxPool2d(2),       # L9
+
+            # ----- Block 2 -----
+            nn.Flatten(),          # L10
+            nn.Linear(64*5*5, 128),# L11
+            nn.ReLU(),             # L12
+            nn.Linear(128, 64),    # L13
+            nn.ReLU(),             # L14
+            nn.Linear(64, 10),     # L15
+            nn.LogSoftmax(dim=1)   # L16
+        ])
+
+    def forward_from(self, x, split_layer):
+        """
+        Continue forward pass from split_layer+1 to end
+        """
+        for i in range(split_layer + 1, len(self.layers)):
+            x = self.layers[i](x)
+        return x
+
+    def forward_upto(self, x, split_layer):
+        """
+        Forward pass from start up to split_layer
+        """
+        for i in range(0, split_layer + 1):
+            x = self.layers[i](x)
+        return x
 
 def command_loop(sock):
     while True:
@@ -99,15 +146,18 @@ def command_loop(sock):
         else:
             print(f"[CLIENT] Unknown command: {cmd}")
 
-
 def handle_set_model(payload):
     print("[CLIENT] Setting model config")
 
 def handle_reset():
-    print("[CLIENT] Resetting model")
+    global model, optimizer
+    model = P3SLModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
+    send_msg(sock, {"cmd": "RESET_OK", "payload": {"client_id": client_id_assigned}})
 
 def handle_train(payload):
     print("[CLIENT] Training step requested")
+
 
 if __name__ == '__main__':
     command_loop(sock)
