@@ -339,7 +339,11 @@ def orchestration_loop():
     #we are currently hard passing the number of clients in the reset function
     reset_everything()
 
-        # Rule 4 make plans to how u gonna split the dataset into workable so that each client can train in their liking
+        #all last tasks done very successfully, now to carry this ambition into the future and make my dent in the world
+        # tasks for next day
+        #task 1 -> develop methods to link server labels to clients IR data
+        #task 2 -> design a training routine
+        #task 3 -> Only glory awaits
 
 
 #Potencial functions to add in script
