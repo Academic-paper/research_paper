@@ -264,7 +264,7 @@ class P3SLModel(nn.Module):
 
             # ----- Block 2 -----
             nn.Flatten(),          # L10
-            nn.Linear(64*5*5, 128),# L11
+            nn.Linear(64*4*4, 128),# L11
             nn.ReLU(),             # L12
             nn.Linear(128, 64),    # L13
             nn.ReLU(),             # L14
@@ -289,9 +289,9 @@ class P3SLModel(nn.Module):
         return x
 
 def reset_server_model():
-    global model, optimizer
+    global model, tail_opts
     model = P3SLModel()
-    optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
+    tail_opts = {}  # clear cached optimizers since model changed
     print("[SERVER] Server model reset", flush=True)
 
 
@@ -319,9 +319,10 @@ def reset_everything(n_clients=5):
 
     # 3) tell each client to reset
     for cid in ids:
-        #storing client split layer information
-        clients[cid]["config"] = {"split_layer": random.randint(2,6)}
-        send_to_client(cid, "RESET", None)
+        with clients_lock:
+            #storing client split layer information
+            clients[cid]["config"] = {"split_layer": random.randint(2,6)}
+        send_to_client(cid, "RESET", {"split_layer": clients[cid]["config"]["split_layer"]})
 
     # 4) wait for RESET_OK from each client
     for cid in ids:
@@ -333,11 +334,167 @@ def reset_everything(n_clients=5):
 
     print("[SERVER] Sent RESET to all clients", flush=True)
 
+def dataset_transformations(dataset: str):
+    if dataset == "MNIST":
+        return transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.5,), (0.5,))])
 
+
+train_ds = None
+criterion = nn.NLLLoss() # because model ends with logsoftmaxx
+def load_dataset_on_server():
+    global train_ds
+    root = "/data"
+    tfm = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+    train_ds = datasets.FashionMNIST(root, train=True, download=False, transform=tfm)
+    print(f"[SERVER] Loaded FashionMNIST with N={len(train_ds)}", flush=True)
+
+
+def assign_shards_to_clients(ids):
+    assert train_ds is not None
+    N = len(train_ds)
+    shards = np.array_split(np.arange(N), len(ids))
+
+    with clients_lock:
+        for k, cid in enumerate(ids):
+            clients[cid]["config"]["shard_indices"] = shards[k].tolist()
+            clients[cid]["config"]["step"] = 0  # pointer into shard
+            # you already do split_layer randomization; keep it:
+            if "split_layer" not in clients[cid]["config"]:
+                clients[cid]["config"]["split_layer"] = random.randint(2, 6)
+
+    print("[SERVER] Shards assigned", flush=True)
+
+def next_batch_indices_for_client(cid, batch_size):
+    with clients_lock:
+        shard = clients[cid]["config"]["shard_indices"]
+        step = clients[cid]["config"]["step"]
+
+    start = step * batch_size
+    end = start + batch_size
+    if start >= len(shard):
+        return None, None
+
+    batch = shard[start:end]
+
+    with clients_lock:
+        clients[cid]["config"]["step"] += 1
+
+    return batch, step
+
+
+def run_train_step_for_client(cid, batch_size=64, timeout=30):
+    split_layer = clients[cid]["config"]["split_layer"]
+    indices, step_used = next_batch_indices_for_client(cid, batch_size)
+    if indices is None:
+        return False  # done
+    job_id = f"{cid}:{step_used}"
+
+    # 1) tell client exactly what to train on
+    send_to_client(cid, "TRAIN_JOB", {
+        "job_id": job_id,
+        "indices": indices,
+        "split_layer": split_layer
+    })
+
+    # 2) wait for client IR
+    msg = wait_for(cid, "IR", timeout=timeout)
+    if msg is None:
+        print(f"[SERVER] ❌ No IR from client {cid} for job {job_id}", flush=True)
+        return False
+
+    payload = msg["payload"]
+    if payload["job_id"] != job_id:
+        print(f"[SERVER] ⚠️ job mismatch: expected {job_id} got {payload['job_id']}", flush=True)
+        return False
+
+    device = next(model.parameters()).device
+    ir = deserialize_tensor(payload["ir"]).float().to(device).requires_grad_(True)
+
+    # 3) server gets labels by deterministic indexing
+    # FashionMNIST: train_ds.targets is a tensor of size N
+
+    # build an optimizer for THIS split (or cache it; see below)
+    tail_opt = get_tail_optimizer(split_layer, lr=0.003, momentum=0.9)
+    tail_opt.zero_grad()
+
+    # 4) forward server-side part + loss
+    out = model.forward_from(ir, split_layer)
+
+    # labels (deterministic indexing)
+    idx_cpu = torch.as_tensor(indices, dtype=torch.long)  # CPU
+    labels = train_ds.targets[idx_cpu].long().to(device)  # move labels after indexing
+
+    loss = criterion(out, labels)
+
+    # 5) backprop to IR
+    loss.backward()
+    tail_opt.step()
+    grad = ir.grad.detach()
+
+    # i need to do the backprogation in server itself till i reach the client split layer point then pass the further back propogation to client
+    # code below is wrong
+    send_to_client(cid, "BWD", {
+        "job_id": job_id,
+        "grad": serialize_tensor(grad),
+        "loss": float(loss.item())
+    })
+    ok = wait_for(cid, "STEP_OK", timeout=10)
+    if ok:
+        print(f"[SERVER] client {cid} finished {job_id}", flush=True)
+
+    return True
+
+def tail_parameters_for_split(split_layer: int):
+    # params in layers split_layer+1 ... end
+    params = []
+    for i in range(split_layer + 1, len(model.layers)):
+        params += list(model.layers[i].parameters())
+    return params
+
+tail_opts = {}
+def get_tail_optimizer(split_layer, lr=0.003, momentum=0.9):
+    if split_layer not in tail_opts:
+        tail_opts[split_layer] = make_tail_optimizer(split_layer, lr=lr, momentum=momentum)
+    return tail_opts[split_layer]
+
+
+def make_tail_optimizer(split_layer: int, lr=0.003, momentum=0.9):
+    params = tail_parameters_for_split(split_layer)
+    # some layers (ReLU, Flatten) have no params; that's ok
+    return optim.SGD(params, lr=lr, momentum=momentum)
+
+
+
+def load_dataset_on_clients():
+    with clients_lock:
+        ids = list(clients.keys())
+
+    for cid in ids:
+        send_to_client(cid, "LOAD_DATASET", {
+            "dir": "/data"
+        })
 
 def orchestration_loop():
-    #we are currently hard passing the number of clients in the reset function
-    reset_everything()
+    reset_everything(n_clients=5)
+    load_dataset_on_server()
+    load_dataset_on_clients()
+
+    ids = wait_for_n_clients(5)
+    assign_shards_to_clients(ids)
+
+    epochs = 20
+    for ep in range(epochs):
+        active = set(ids)
+        while active:
+            for cid in list(active):
+                ok = run_train_step_for_client(cid, batch_size=64, timeout=30)
+                if not ok:
+                    active.remove(cid)
+
+    print("[SERVER] Training done")
 
         #all last tasks done very successfully, now to carry this ambition into the future and make my dent in the world
         # tasks for next day
