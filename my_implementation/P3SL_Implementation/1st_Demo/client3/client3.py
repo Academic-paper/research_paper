@@ -49,7 +49,8 @@ def serialize_tensor(tensor):
 
 def deserialize_tensor(byte_data):
     buffer = io.BytesIO(byte_data)
-    return torch.load(buffer)
+    return torch.load(buffer, map_location="cpu")
+
 
 client_id_assigned = None
 server_host = "server"
@@ -207,7 +208,7 @@ def head_parameters_for_split(split_layer):
         params += list(model.layers[i].parameters())
     return params
 
-def get_head_optimizer(split_layer, lr=0.003, momentum=0.9):
+def get_head_optimizer(split_layer, lr=0.01, momentum=0.9):
     global head_opts
     with head_opts_lock:
         if split_layer not in head_opts:
@@ -240,6 +241,9 @@ def handle_train(payload):
 
     # IMPORTANT: IR must require grad for boundary backprop
     ir = model.forward_upto(x, split_layer)
+    if not torch.isfinite(ir).all():
+        print("IR has NaN/Inf");
+        return
 
     # 3) send IR to server
     send_msg(sock, {
@@ -283,6 +287,7 @@ def handle_train(payload):
     grad = deserialize_tensor(bwd_payload["grad"])
     ir.backward(grad)
 
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
     p = next(model.parameters())

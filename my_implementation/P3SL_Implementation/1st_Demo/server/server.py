@@ -53,7 +53,8 @@ def serialize_tensor(tensor):
 
 def deserialize_tensor(byte_data):
     buffer = io.BytesIO(byte_data)
-    return torch.load(buffer)
+    return torch.load(buffer, map_location="cpu")
+
 
 
 #Deciding orchestration logic
@@ -269,7 +270,6 @@ class P3SLModel(nn.Module):
             nn.Linear(128, 64),    # L13
             nn.ReLU(),             # L14
             nn.Linear(64, 10),     # L15
-            nn.LogSoftmax(dim=1)   # L16
         ])
 
     def forward_from(self, x, split_layer):
@@ -321,7 +321,7 @@ def reset_everything(n_clients=5):
     for cid in ids:
         with clients_lock:
             #storing client split layer information
-            clients[cid]["config"] = {"split_layer": random.randint(2,6)}
+            clients[cid]["config"] = {"split_layer": 5}  # or randomize per client if you want
         send_to_client(cid, "RESET", {"split_layer": clients[cid]["config"]["split_layer"]})
 
     # 4) wait for RESET_OK from each client
@@ -340,7 +340,7 @@ def dataset_transformations(dataset: str):
 
 
 train_ds = None
-criterion = nn.NLLLoss() # because model ends with logsoftmaxx
+criterion = nn.CrossEntropyLoss() # because model ends with logsoftmaxx
 def load_dataset_on_server():
     global train_ds
     root = "/data"
@@ -417,20 +417,27 @@ def run_train_step_for_client(cid, batch_size=64, timeout=30):
     # FashionMNIST: train_ds.targets is a tensor of size N
 
     # build an optimizer for THIS split (or cache it; see below)
-    tail_opt = get_tail_optimizer(split_layer, lr=0.003, momentum=0.9)
+    tail_opt = get_tail_optimizer(split_layer, lr=0.01, momentum=0.9)
     tail_opt.zero_grad()
 
     # 4) forward server-side part + loss
     out = model.forward_from(ir, split_layer)
+    if not torch.isfinite(out).all():
+        print("OUT has NaN/Inf");
+        return
 
     # labels (deterministic indexing)
     idx_cpu = torch.as_tensor(indices, dtype=torch.long)  # CPU
     labels = train_ds.targets[idx_cpu].long().to(device)  # move labels after indexing
 
     loss = criterion(out, labels)
+    if not torch.isfinite(loss):
+        print("LOSS is NaN/Inf");
+        return
 
     # 5) backprop to IR
     loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     tail_opt.step()
     grad = ir.grad.detach()
 
@@ -455,13 +462,13 @@ def tail_parameters_for_split(split_layer: int):
     return params
 
 tail_opts = {}
-def get_tail_optimizer(split_layer, lr=0.003, momentum=0.9):
+def get_tail_optimizer(split_layer, lr=0.01, momentum=0.9):
     if split_layer not in tail_opts:
         tail_opts[split_layer] = make_tail_optimizer(split_layer, lr=lr, momentum=momentum)
     return tail_opts[split_layer]
 
 
-def make_tail_optimizer(split_layer: int, lr=0.003, momentum=0.9):
+def make_tail_optimizer(split_layer: int, lr=0.01, momentum=0.9):
     params = tail_parameters_for_split(split_layer)
     # some layers (ReLU, Flatten) have no params; that's ok
     return optim.SGD(params, lr=lr, momentum=momentum)
@@ -485,7 +492,7 @@ def orchestration_loop():
     ids = wait_for_n_clients(5)
     assign_shards_to_clients(ids)
 
-    epochs = 20
+    epochs = 5
     for ep in range(epochs):
         active = set(ids)
         while active:
