@@ -5,6 +5,7 @@
 # server each one by one, asks each client to train with them
 # training ends,weighted model aggregation happens
 import random
+import re
 
 print("[SERVER] server.py started", flush=True)
 
@@ -243,33 +244,33 @@ def wait_for(client_id, expected_cmd, timeout=10):
 
 model = None
 optimizer = None
+Smax = 6
 
 class P3SLModel(nn.Module):
     def __init__(self):
         super().__init__()
 
         self.layers = nn.ModuleList([
-            # ----- Block 0 -----
-            nn.Conv2d(1, 32, 3),   # L0
-            nn.ReLU(),             # L1
-            nn.Conv2d(32, 32, 3),  # L2
-            nn.ReLU(),             # L3
-            nn.MaxPool2d(2),       # L4
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
 
-            # ----- Block 1 -----
-            nn.Conv2d(32, 64, 3),  # L5
-            nn.ReLU(),             # L6
-            nn.Conv2d(64, 64, 3),  # L7
-            nn.ReLU(),             # L8
-            nn.MaxPool2d(2),       # L9
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
 
-            # ----- Block 2 -----
-            nn.Flatten(),          # L10
-            nn.Linear(64*4*4, 128),# L11
-            nn.ReLU(),             # L12
-            nn.Linear(128, 64),    # L13
-            nn.ReLU(),             # L14
-            nn.Linear(64, 10),     # L15
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 10),
         ])
 
     def forward_from(self, x, split_layer):
@@ -473,8 +474,6 @@ def make_tail_optimizer(split_layer: int, lr=0.01, momentum=0.9):
     # some layers (ReLU, Flatten) have no params; that's ok
     return optim.SGD(params, lr=lr, momentum=momentum)
 
-
-
 def load_dataset_on_clients():
     with clients_lock:
         ids = list(clients.keys())
@@ -484,6 +483,65 @@ def load_dataset_on_clients():
             "dir": "/data"
         })
 
+_layer_key_re = re.compile(r"^layers\.(\d+)\.")
+
+def layer_index_from_key(k: str):
+    m = _layer_key_re.match(k)
+    return int(m.group(1)) if m else None
+
+def is_key_upto_layer(k: str, upto: int) -> bool:
+    idx = layer_index_from_key(k)
+    return (idx is not None) and (idx <= upto)
+
+def aggregate_p3sl_uniform(head_payloads, smax: int, N_expected: int):
+    global_sd = model.state_dict()
+
+    # keys we aggregate: params/buffers for layers <= smax
+    agg_keys = [k for k in global_sd.keys() if is_key_upto_layer(k, smax)]
+
+    # accumulator
+    acc = {k: torch.zeros_like(global_sd[k], dtype=torch.float32) for k in agg_keys}
+
+    # for each client payload, add client weight if present else global weight
+    for pl in head_payloads:
+        client_sd = pl["state_dict"]
+        for k in agg_keys:
+            v = client_sd.get(k, global_sd[k])     # PAD missing with server/global
+            acc[k] += v.to(dtype=torch.float32)
+
+    # divide by total clients N (even if some payload missing you probably want to fail loudly)
+    if len(head_payloads) != N_expected:
+        print(f"[SERVER] Warning: got {len(head_payloads)} payloads, expected {N_expected}")
+
+    for k in agg_keys:
+        global_sd[k] = (acc[k] / float(N_expected)).to(dtype=global_sd[k].dtype)
+
+    model.load_state_dict(global_sd)
+
+def request_head_weights(ids, smax: int, timeout=20):
+    head_payloads = []
+
+    # 1) send request
+    for cid in ids:
+        with clients_lock:
+            split_layer = clients[cid]["config"]["split_layer"]
+        send_to_client(cid, "GET_HEAD_WEIGHTS", {
+            "smax": smax,
+            "split_layer": split_layer,
+        })
+
+    # 2) collect responses
+    for cid in ids:
+        msg = wait_for(cid, "HEAD_WEIGHTS", timeout=timeout)
+        if msg is None:
+            print(f"[SERVER] ❌ No HEAD_WEIGHTS from client {cid}", flush=True)
+            continue
+        head_payloads.append(msg["payload"])
+
+    return head_payloads
+
+
+
 def orchestration_loop():
     reset_everything(n_clients=5)
     load_dataset_on_server()
@@ -492,8 +550,13 @@ def orchestration_loop():
     ids = wait_for_n_clients(5)
     assign_shards_to_clients(ids)
 
-    epochs = 5
+    epochs = 2
+
     for ep in range(epochs):
+        with clients_lock:
+            for cid in ids:
+                clients[cid]["config"]["step"] = 0
+                random.shuffle(clients[cid]["config"]["shard_indices"])  # optional but recommended
         active = set(ids)
         while active:
             for cid in list(active):
@@ -503,14 +566,29 @@ def orchestration_loop():
 
     print("[SERVER] Training done")
 
-        #all last tasks done very successfully, now to carry this ambition into the future and make my dent in the world
-        # tasks for next day
-        #task 1 -> develop methods to link server labels to clients IR data
-        #task 2 -> design a training routine
-        #task 3 -> Only glory awaits
+    # Write model aggregation code from here;
+
+    # 1) request client head weights (0..min(split_layer,Smax))
+    head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
+
+    # 2) aggregate P3SL-style (pad missing with server weights, divide by N)
+    aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
+
+    print("[SERVER] ✅ Aggregation done", flush=True)
 
 
 #Potencial functions to add in script
+
+def broadcast_global_head(ids, smax: int):
+    sd = model.state_dict()
+    head_sd = {k: v.cpu() for k, v in sd.items() if is_key_upto_layer(k, smax)}
+    for cid in ids:
+        send_to_client(cid, "SET_GLOBAL_HEAD", {"smax": smax, "state_dict": head_sd})
+
+# broadcast_global_head(ids, Smax)
+#   for cid in ids:
+#        wait_for(cid, "SET_GLOBAL_HEAD_OK", timeout=10)
+
 
 def set_hyperparameters():
     pass

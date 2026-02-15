@@ -12,6 +12,7 @@ import socket
 import pickle
 import struct
 import threading
+import re
 
 
 pending_bwd = {}  # job_id -> payload (if BWD arrives before TRAIN_JOB finishes)
@@ -95,28 +96,26 @@ class P3SLModel(nn.Module):
         super().__init__()
 
         self.layers = nn.ModuleList([
-            # ----- Block 0 -----
-            nn.Conv2d(1, 32, 3),   # L0
-            nn.ReLU(),             # L1
-            nn.Conv2d(32, 32, 3),  # L2
-            nn.ReLU(),             # L3
-            nn.MaxPool2d(2),       # L4
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
 
-            # ----- Block 1 -----
-            nn.Conv2d(32, 64, 3),  # L5
-            nn.ReLU(),             # L6
-            nn.Conv2d(64, 64, 3),  # L7
-            nn.ReLU(),             # L8
-            nn.MaxPool2d(2),       # L9
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
 
-            # ----- Block 2 -----
-            nn.Flatten(),          # L10
-            nn.Linear(64*4*4, 128),# L11
-            nn.ReLU(),             # L12
-            nn.Linear(128, 64),    # L13
-            nn.ReLU(),             # L14
-            nn.Linear(64, 10),     # L15
-            nn.LogSoftmax(dim=1)   # L16
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 10),
         ])
 
     def forward_from(self, x, split_layer):
@@ -161,6 +160,8 @@ def command_loop(sock):
             pl = payload
             with pending_lock:
                 pending_bwd[pl["job_id"]] = pl
+        elif cmd == "GET_HEAD_WEIGHTS":
+            handle_get_head_weights(payload)
         else:
             print(f"[CLIENT] Unknown command: {cmd}")
 
@@ -301,6 +302,53 @@ def handle_train(payload):
     })
 
     print(f"[CLIENT {client_id_assigned}] STEP_OK job={job_id} loss={bwd_payload.get('loss')}", flush=True)
+
+_layer_key_re = re.compile(r"^layers\.(\d+)\.")
+
+def layer_index_from_key(k: str):
+    m = _layer_key_re.match(k)
+    return int(m.group(1)) if m else None
+
+def is_key_upto_layer(k: str, upto: int) -> bool:
+    idx = layer_index_from_key(k)
+    return (idx is not None) and (idx <= upto)
+
+def handle_get_head_weights(payload):
+    smax = payload["smax"]
+    split_layer = payload["split_layer"]
+    upto = min(split_layer, smax)
+
+    sd = model.state_dict()
+    head_sd = {k: v.cpu() for k, v in sd.items() if is_key_upto_layer(k, upto)}
+
+    send_msg(sock, {
+        "cmd": "HEAD_WEIGHTS",
+        "payload": {
+            "client_id": client_id_assigned,
+            "split_layer": split_layer,
+            "state_dict": head_sd
+        }
+    })
+
+
+#potencial functions to implement in script:
+def handle_set_global_head(payload):
+    smax = payload["smax"]
+    head_sd = payload["state_dict"]
+
+    sd = model.state_dict()
+    # overwrite keys we received
+    for k, v in head_sd.items():
+        sd[k] = v
+    model.load_state_dict(sd)
+
+    # IMPORTANT: optimizers are now stale -> clear cache
+    global head_opts
+    with head_opts_lock:
+        head_opts = {}
+
+    send_msg(sock, {"cmd": "SET_GLOBAL_HEAD_OK", "payload": {"client_id": client_id_assigned}})
+
 
 
 if __name__ == '__main__':
