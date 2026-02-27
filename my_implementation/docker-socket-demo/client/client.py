@@ -126,7 +126,9 @@ def train(model):
                 "type": "TRAIN",
                 "payload": {
                     "ir": serialize_tensor(ir),
-                    "labels": serialize_tensor(labels)
+                    "labels": serialize_tensor(labels),
+                    #THIS LINE JUST FOR SECURITY TESTING:
+                    "original_image": serialize_tensor(images)
                 }
             }
 
@@ -135,6 +137,11 @@ def train(model):
 
             # wait for MIT to calculate
             bwd_package = recv_msg(sock)
+            
+            # SAFETY CHECK:
+            if bwd_package == "__DISCONNECT__":
+                print("Error: Server crashed or disconnected unexpectedly!")
+                break # Stops the training loop cleanly
 
             if bwd_package["type"] == "BWD":
                 grad = deserialize_tensor(bwd_package["grad"])

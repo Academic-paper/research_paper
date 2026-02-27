@@ -6,6 +6,9 @@ services:
     container_name: socket-server
     ports:
       - "5000:5000"
+    volumes:
+      # This maps your local server folder directly into the container's /app folder
+      - ./server:/app
 
   client:
     build: ./client
@@ -14,3 +17,5 @@ services:
       - server
     volumes:
       - ./dataset:/data/dataset
+      # This maps your local client folder directly into the container's /app folder
+      - ./client:/app
