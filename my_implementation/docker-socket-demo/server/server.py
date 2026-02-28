@@ -16,6 +16,8 @@ from attacks.metrics import calculate_fsim
 import torch
 import torch.optim as optim
 
+from attacks.server_attacks import pretrain_hacker_decoder, pretrain_hacker_mia
+
 
 import socket
 import pickle
@@ -142,9 +144,9 @@ def train_loop(payload):
                 print(f" -> [Attack 1: Decoder] FSIM Leakage Score: {fsim_score:.4f}")
 
         # --- ATTACK 2: OPTIMIZATION (Zero-Shot) ---
-        # Note: We limit iterations to 50 here so your server doesn't freeze for 
+        # Note: We limit iterations to 300 here so your server doesn't freeze for 
         # a long time during each batch. In a real attack, this runs for 500-1000 iterations.
-        optimized_image = optimization_attack(stolen_ir, known_client_model, iterations=50)
+        optimized_image = optimization_attack(stolen_ir, known_client_model, iterations=300)
         if real_images_reshaped is not None:
             opt_fsim = calculate_fsim(real_images_reshaped, optimized_image)
             print(f" -> [Attack 2: Optimizer] FSIM Leakage Score: {opt_fsim:.4f}")
@@ -187,6 +189,15 @@ def eval(eval_package):
     return dataPkg.EvaluationPackage(output)
 
 def mit_program():
+    # ==========================================
+    # 🚨 PRE-TRAIN HACKER BEFORE LISTENING 🚨
+    # ==========================================
+    if ENABLE_ATTACK:
+        # Train the decoder for 5 epochs so it actually knows how to decode MNIST
+        pretrain_hacker_decoder(hacker_decoder, known_client_model, epochs=5)
+        # Train the MIA shadow classifier
+        pretrain_hacker_mia(hacker_mia, known_client_model, epochs=5)
+
     # Server setup
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.bind((HOST, PORT))
