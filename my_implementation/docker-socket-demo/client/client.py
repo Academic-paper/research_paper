@@ -75,7 +75,7 @@ valloader = torch.utils.data.DataLoader(valset, batch_size=64, shuffle=True)
 input_size = 784
 hidden_sizes = [128, 64]
 
-epochs = 100
+epochs = 2
 
 def reset_model():
     #Reset local model
