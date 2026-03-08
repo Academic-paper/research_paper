@@ -42,7 +42,7 @@ PORT = 5000
 # ==========================================
 # 🚨 MALICIOUS SERVER CONFIGURATION 🚨
 # ==========================================
-ENABLE_ATTACK = True
+ENABLE_ATTACK = False
 
 # ATTACK 1 SETUP: Whitebox Decoder
 hacker_decoder = InversionDecoder(ir_size=64) 
@@ -215,9 +215,17 @@ def train_loop(payload):
         "loss": loss.item()
     }
 
-def eval(eval_package):
-    output = model(eval_package.y)
-    return dataPkg.EvaluationPackage(output)
+def eval_loop(payload):
+    global model
+    ir = deserialize_tensor(payload["ir"])
+    
+    with torch.no_grad():
+        output = model(ir)
+        
+    return {
+        "type": "EVAL_RESULT",
+        "predictions": serialize_tensor(output)
+    }
 
 def mit_program():
     # CREATE RESULTS FOLDER DYNAMICALLY
@@ -260,7 +268,7 @@ def mit_program():
             reply = train_loop(msg["payload"])
 
         elif msg_type == "EVAL":
-            reply = eval(msg["payload"])
+            reply = eval_loop(msg["payload"])
 
         elif msg_type == "CLOSE":
             send_msg(conn, {"type": "BYE"})
