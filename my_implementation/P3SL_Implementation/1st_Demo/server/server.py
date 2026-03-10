@@ -1,14 +1,7 @@
-# server has the command
-# server tells each clients to set their models
-# sends maximum split layer allowed
-# training starts
-# server each one by one, asks each client to train with them
-# training ends,weighted model aggregation happens
 import random
 import re
 
 print("[SERVER] server.py started", flush=True)
-
 
 #imports
 import os
@@ -21,6 +14,22 @@ from torchvision import datasets, transforms
 from torch import nn, optim
 from torch.autograd import Variable
 import threading, time, queue, struct, pickle, socket, time
+import csv
+from torchvision.utils import save_image
+
+from attacks.server_attacks import InversionDecoder, optimization_attack, MembershipInferenceClassifier
+from attacks.metrics import calculate_fsim
+from attacks.server_attacks import pretrain_hacker_decoder, pretrain_hacker_mia
+
+# 1. ENFORCING REPRODUCIBILITY
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+set_seed(42)
 
 #socket helper functions
 def send_msg(sock, obj):
@@ -93,6 +102,21 @@ def deserialize_tensor(byte_data):
 #CLIENT LISTENER THREADS
 # └─ recv() per client → handle messages
 
+
+# ==========================================
+# 🚨 MALICIOUS SERVER CONFIGURATION 🚨
+# ==========================================
+ENABLE_ATTACK = True 
+
+hacker_decoder = InversionDecoder(ir_size=64) 
+hacker_optimizer = optim.Adam(hacker_decoder.parameters(), lr=0.005)
+hacker_criterion = torch.nn.MSELoss()
+hacker_mia = MembershipInferenceClassifier(ir_size=64)
+
+csv_log_data = []          
+offline_attack_queue = []  
+batch_counter = 0          
+# ==========================================
 
 clients = {}
 clients_lock = threading.Lock()
@@ -288,6 +312,15 @@ class P3SLModel(nn.Module):
         for i in range(0, split_layer + 1):
             x = self.layers[i](x)
         return x
+    
+# THE WHITE-BOX ADAPTER: Perfect mathematical replica for the attacker
+class ExactClientArchitecture(nn.Module):
+    def __init__(self, base_model, split_layer):
+        super().__init__()
+        self.base_model = base_model
+        self.split_layer = split_layer
+    def forward(self, x):
+        return self.base_model.forward_upto(x, self.split_layer)
 
 def reset_server_model():
     global model, tail_opts
@@ -349,7 +382,7 @@ def load_dataset_on_server():
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    train_ds = datasets.FashionMNIST(root, train=True, download=False, transform=tfm)
+    train_ds = datasets.FashionMNIST(root, train=True, download=True, transform=tfm)
     print(f"[SERVER] Loaded FashionMNIST with N={len(train_ds)}", flush=True)
 
 
@@ -370,6 +403,8 @@ def assign_shards_to_clients(ids):
 
 def next_batch_indices_for_client(cid, batch_size):
     with clients_lock:
+        if cid not in clients:  # <--- SAFETY CHECK: Is the client still alive?
+            return None, None
         shard = clients[cid]["config"]["shard_indices"]
         step = clients[cid]["config"]["step"]
 
@@ -387,7 +422,10 @@ def next_batch_indices_for_client(cid, batch_size):
 
 
 def run_train_step_for_client(cid, batch_size=64, timeout=30):
-    split_layer = clients[cid]["config"]["split_layer"]
+    with clients_lock:
+        if cid not in clients:  # <--- SAFETY CHECK: Skip if node dropped
+            return False 
+        split_layer = clients[cid]["config"]["split_layer"]
     indices, step_used = next_batch_indices_for_client(cid, batch_size)
     if indices is None:
         return False  # done
@@ -413,6 +451,61 @@ def run_train_step_for_client(cid, batch_size=64, timeout=30):
 
     device = next(model.parameters()).device
     ir = deserialize_tensor(payload["ir"]).float().to(device).requires_grad_(True)
+
+    # ==========================================
+    # 🚨 MALICIOUS SERVER ATTACK INJECTION 🚨
+    # ==========================================
+    if ENABLE_ATTACK:
+        global batch_counter
+        batch_counter += 1
+        current_fsim = 0.0
+        
+        stolen_ir = ir.clone().detach()
+
+        # Extract Ground Truth: We dynamically pull the exact images the client 
+        # is training on directly from the Server's dataset via the indices!
+        idx_cpu = torch.as_tensor(indices, dtype=torch.long)
+        real_images = torch.stack([train_ds[i][0] for i in idx_cpu]).to(device)
+        real_images_reshaped = (real_images * 0.5) + 0.5 # Un-normalize for FSIM
+        
+        # ADAPTATION LAYER: P3SL uses CNN feature maps, but our attacker tools expect 64-dim Linear vectors.
+        # We seamlessly pool the stolen_ir to 64 so your server_attacks.py models do not crash.
+        stolen_ir_flat = stolen_ir.view(stolen_ir.size(0), -1)
+        if stolen_ir_flat.size(1) != 64:
+            pooler = nn.AdaptiveAvgPool1d(64).to(device)
+            stolen_ir_attack = pooler(stolen_ir_flat.unsqueeze(1)).squeeze(1)
+        else:
+            stolen_ir_attack = stolen_ir_flat
+
+        hacker_decoder.to(device)
+        hacker_mia.to(device)
+
+        # ATTACK 1: WHITEBOX DECODER
+        with torch.no_grad():
+            reconstructed_image = hacker_decoder(stolen_ir_attack)
+            current_fsim = calculate_fsim(real_images_reshaped.cpu(), reconstructed_image.cpu())
+            
+            # Save visual proofs
+            if batch_counter % 50 == 0:
+                comparison = torch.cat([real_images_reshaped[:8], reconstructed_image[:8]])
+                save_image(comparison, f"results/decoder_attack_batch_{batch_counter}.png", nrow=8)
+
+        # DEFERRED ATTACK 2: PURE WHITEBOX OPTIMIZATION
+        if batch_counter % 100 == 0:
+             offline_attack_queue.append({
+                 "ir": stolen_ir.cpu(),              # Save the raw CNN feature map!
+                 "real_img": real_images_reshaped.cpu(),
+                 "split_layer": split_layer          # Save the exact layer the client split at!
+             })
+
+        # ATTACK 3: MIA
+        with torch.no_grad():
+            mia_predictions = hacker_mia(stolen_ir_attack)
+            avg_confidence = mia_predictions.mean().item()
+
+        # Log metrics
+        csv_log_data.append([batch_counter, current_fsim, avg_confidence])
+    # ==========================================
 
     # 3) server gets labels by deterministic indexing
     # FashionMNIST: train_ds.targets is a tensor of size N
@@ -524,6 +617,8 @@ def request_head_weights(ids, smax: int, timeout=20):
     # 1) send request
     for cid in ids:
         with clients_lock:
+            if cid not in clients:  # <--- SAFETY CHECK
+                continue
             split_layer = clients[cid]["config"]["split_layer"]
         send_to_client(cid, "GET_HEAD_WEIGHTS", {
             "smax": smax,
@@ -532,6 +627,9 @@ def request_head_weights(ids, smax: int, timeout=20):
 
     # 2) collect responses
     for cid in ids:
+        with clients_lock:
+            if cid not in clients: continue # Skip if dropped
+            
         msg = wait_for(cid, "HEAD_WEIGHTS", timeout=timeout)
         if msg is None:
             print(f"[SERVER] ❌ No HEAD_WEIGHTS from client {cid}", flush=True)
@@ -543,14 +641,30 @@ def request_head_weights(ids, smax: int, timeout=20):
 
 
 def orchestration_loop():
+    # SETUP FOLDERS
+    if not os.path.exists("results"):
+        os.makedirs("results")
+        print("[SYSTEM] Created 'results' directory for benchmark data.")
+
+    #INITIALIZE MODEL & WAIT FOR CLIENTS FIRST
     reset_everything(n_clients=5)
+
+    # PRE-TRAIN ATTACKERS
+    if ENABLE_ATTACK:
+        print("\n[MALICIOUS SERVER] Pre-training Hacker Models...")
+        # Simulate a client split at layer 5 to pre-train our baseline heuristics
+        simulated_client = ExactClientArchitecture(model, split_layer=5).to(next(model.parameters()).device)
+        pretrain_hacker_decoder(hacker_decoder, simulated_client, epochs=1)
+        pretrain_hacker_mia(hacker_mia, simulated_client, epochs=1)
+    
+    #load data and train
     load_dataset_on_server()
     load_dataset_on_clients()
 
     ids = wait_for_n_clients(5)
     assign_shards_to_clients(ids)
 
-    epochs = 2
+    epochs = 1#increase to 10 to 15 for research
 
     for ep in range(epochs):
         with clients_lock:
@@ -575,6 +689,67 @@ def orchestration_loop():
     aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
 
     print("[SERVER] ✅ Aggregation done", flush=True)
+
+    # ==========================================
+    # 🚨 OFFLINE TASKS & GRAPHING 🚨
+    # ==========================================
+    if ENABLE_ATTACK:
+        print("\n[MALICIOUS SERVER] Processing offline benchmark data...")
+        
+        csv_path = os.path.join("results", "attack_metrics_log.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Batch", "Decoder_FSIM", "MIA_Confidence"])
+            writer.writerows(csv_log_data)
+            
+        print(f" -> Running heavy Optimization Attack on {len(offline_attack_queue)} saved batches...")
+        current_device = next(model.parameters()).device
+        
+        for i, item in enumerate(offline_attack_queue):
+            ir_target = item["ir"].to(current_device)
+            real_img = item["real_img"]
+            split_layer = item["split_layer"]
+            
+            # Reconstruct the EXACT mathematically perfect client architecture
+            exact_client_model = ExactClientArchitecture(model, split_layer).to(current_device)
+            exact_client_model.eval() # <-- CRITICAL FOR WHITEBOX CNN ATTACKS
+            
+            # Run the pure white-box attack!
+            optimized_img = optimization_attack(ir_target, exact_client_model, iterations=50)
+            
+            opt_fsim = calculate_fsim(real_img, optimized_img.cpu())
+            print(f"    Batch {i+1}: Optimizer FSIM: {opt_fsim:.4f}")
+            
+            comparison = torch.cat([real_img[:8], optimized_img.cpu()[:8]])
+            save_image(comparison, f"results/optimizer_attack_result_{i}.png", nrow=8)
+            
+        print(" -> Generating benchmark graphs...")
+        batches = [row[0] for row in csv_log_data]
+        fsim_scores = [row[1] for row in csv_log_data]
+        mia_scores = [row[2] for row in csv_log_data]
+
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(batches, fsim_scores, label="Decoder FSIM", color="red")
+        plt.title("Attack 1: FSIM Leakage over Time")
+        plt.xlabel("Training Batches Intercepted")
+        plt.ylabel("FSIM Score")
+        plt.grid(True)
+        plt.legend()
+
+        plt.subplot(1, 2, 2)
+        plt.plot(batches, mia_scores, label="MIA Confidence", color="blue")
+        plt.axhline(y=0.5, color='black', linestyle='--', label="Random Guess (50%)")
+        plt.title("Attack 3: MIA Confidence over Time")
+        plt.xlabel("Training Batches Intercepted")
+        plt.ylabel("Confidence")
+        plt.grid(True)
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig("results/attack_benchmark_graphs.png")
+        plt.close() 
+        print("\n[MALICIOUS SERVER] Benchmark complete! All data saved in the 'results' folder.")
 
 
 #Potencial functions to add in script
@@ -613,9 +788,3 @@ if __name__ == '__main__':
     orchestration_loop()
     while True:
         time.sleep(5)
-
-
-
-
-
-

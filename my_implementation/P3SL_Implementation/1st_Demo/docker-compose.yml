@@ -8,40 +8,50 @@ services:
       - "5000:5000"
     volumes:
       - ./dataset/data:/data
+      - ./server:/app   # <--- SYNC ENTIRE SERVER FOLDER (Live Code & Results)
 
   client1:
-    build: ./client1
+    build: ./client1 
     container_name: socket-client1
     volumes:
       - ./dataset/data:/data
+      - ./client1:/app  # <--- SYNC ENTIRE HACKER FOLDER (Live Code & Results)
     depends_on:
       - server
 
   client2:
-    build: ./client2
+    build: ./client2 
+    image: normal-client-base  
     container_name: socket-client2
     volumes:
       - ./dataset/data:/data
+      - ./client2:/app  # <--- SYNC NORMAL CLIENT CODE
     depends_on:
       - server
+
   client3:
-    build: ./client3
+    image: normal-client-base  
     container_name: socket-client3
     volumes:
       - ./dataset/data:/data
+      - ./client2:/app  # <--- Shares the synced code from client2!
     depends_on:
-      - server
+      - client2
+
   client4:
-    build: ./client4
+    image: normal-client-base  
     container_name: socket-client4
     volumes:
       - ./dataset/data:/data
+      - ./client2:/app  # <--- Shares the synced code from client2!
     depends_on:
-      - server
+      - client2
+
   client5:
-    build: ./client5
+    image: normal-client-base  
     container_name: socket-client5
     volumes:
       - ./dataset/data:/data
+      - ./client2:/app  # <--- Shares the synced code from client2!
     depends_on:
-      - server
+      - client2
