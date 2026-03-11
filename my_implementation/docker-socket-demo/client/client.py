@@ -186,7 +186,7 @@ def train(model):
             # ==========================================
             # YOGESH: DIFFERENTIAL PRIVACY (LAPLACE)
             # ==========================================
-            sigma = 1.0  # DP Budget. Adjust this to test accuracy!
+            sigma = 5.0  # DP Budget. Adjust this to test accuracy!
             
             if sigma > 0.0:
                 noise = torch.distributions.Laplace(0, sigma).sample(ir.shape).to(ir.device)
@@ -231,45 +231,88 @@ def train(model):
 
     return model
 
-def test(client, model):
+# def test(client, model):
+#     correct_count, all_count = 0, 0
+#     image_idx = 0
+#     for images,labels in valloader:
+#         for i in range(len(labels)):
+#             img = images[i].view(1, 784)
+
+#             with torch.no_grad():
+#                 output = model(img)
+#                 # Prepare data to send to MIT
+#                 y2 = Variable(output.data, requires_grad=True)
+#                 # Send to MIT to contine the process.
+#                 client.sendData(client_send_to, dataPkg.EvaluatePackage(y2))
+#                 # Wait for MIT to calculate and return the logPs
+#                 logps = client.receiveData().logps
+
+#             ps = torch.exp(logps)
+#             probab = list(ps.detach().numpy()[0])
+
+#             pred_label = probab.index(max(probab))
+#             true_label = labels.numpy()[i]
+
+#             if (true_label == pred_label):
+#                 correct_count += 1
+
+#             all_count += 1
+
+#             print("Eval {} Label {} - Evaluation: {}".format(image_idx, i, true_label == pred_label))
+
+#         image_idx += 1
+
+#     print("Number Of Images Tested =", all_count)
+#     print("\nModel Accuracy =", (correct_count/all_count))
+
+# def harvard_program():
+#     model = reset_model()
+#     print("Now we training model")
+#     train(model)
+#     print("Training has finished")
+def test(model):
+    print("\nStarting Evaluation...")
     correct_count, all_count = 0, 0
-    image_idx = 0
-    for images,labels in valloader:
+    model.eval()
+    
+    for images, labels in valloader:
+        images = images.view(images.shape[0], -1)
         for i in range(len(labels)):
             img = images[i].view(1, 784)
 
             with torch.no_grad():
                 output = model(img)
-                # Prepare data to send to MIT
-                y2 = Variable(output.data, requires_grad=True)
-                # Send to MIT to contine the process.
-                client.sendData(client_send_to, dataPkg.EvaluatePackage(y2))
-                # Wait for MIT to calculate and return the logPs
-                logps = client.receiveData().logps
+                
+            msg = {
+                "type": "EVAL",
+                "payload": {
+                    "ir": serialize_tensor(output)
+                }
+            }
+            send_msg(sock, msg)
+            
+            reply = recv_msg(sock)
+            if reply["type"] == "EVAL_RESULT":
+                logps = deserialize_tensor(reply["logps"])
 
             ps = torch.exp(logps)
             probab = list(ps.detach().numpy()[0])
-
             pred_label = probab.index(max(probab))
             true_label = labels.numpy()[i]
 
             if (true_label == pred_label):
                 correct_count += 1
-
             all_count += 1
 
-            print("Eval {} Label {} - Evaluation: {}".format(image_idx, i, true_label == pred_label))
-
-        image_idx += 1
-
     print("Number Of Images Tested =", all_count)
-    print("\nModel Accuracy =", (correct_count/all_count))
+    print("Model Accuracy = {}%".format((correct_count/all_count) * 100))
 
 def harvard_program():
     model = reset_model()
     print("Now we training model")
     train(model)
     print("Training has finished")
+    test(model)
 
 
 if __name__ == '__main__':
