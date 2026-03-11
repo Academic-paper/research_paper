@@ -65,8 +65,9 @@ def deserialize_tensor(byte_data):
 transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.5,), (0.5,)),])
 
 #download dataset
-trainset = datasets.MNIST("/data/dataset", download=False, train=True, transform=transform)
-valset = datasets.MNIST("/data/dataset", download=False, train=False, transform=transform)
+#download dataset
+trainset = datasets.MNIST("/data/dataset", download=True, train=True, transform=transform)
+valset = datasets.MNIST("/data/dataset", download=True, train=False, transform=transform)
 
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
 valloader = torch.utils.data.DataLoader(valset, batch_size=64, shuffle=True)
@@ -97,6 +98,66 @@ def reset_model():
     else:
         raise RuntimeError("Server failed to reset model")
 
+# def train(model):
+#     print("Training has begun from client side")
+#     optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
+#     for e in range(epochs):
+#         running_loss = 0
+#         img = 0
+#         model.train()
+#         for images, labels in trainloader:
+#             # Flatten MNIST images into a 784 long vector
+#             images = images.view(images.shape[0], -1)
+
+#             # Cleaning gradients
+#             optimizer.zero_grad()
+
+#             # evaluate
+#             output = model(images)
+
+#             if output.data.size() != (64,64):
+#                 continue
+
+#             # prepare data for MIT
+#             # send to MIT to contine the process.
+#             ir = output.detach()
+#             labels = labels
+
+#             msg = {
+#                 "type": "TRAIN",
+#                 "payload": {
+#                     "ir": serialize_tensor(ir),
+#                     "labels": serialize_tensor(labels)
+#                 }
+#             }
+
+#             send_msg(sock, msg)
+#             # Gradients sent
+
+#             # wait for MIT to calculate
+#             bwd_package = recv_msg(sock)
+
+#             if bwd_package["type"] == "BWD":
+#                 grad = deserialize_tensor(bwd_package["grad"])
+#                 loss = bwd_package["loss"]
+
+#              # backprop
+#             output.backward(grad)
+
+#             # optimize the weights
+#             optimizer.step()
+
+#             running_loss += loss
+
+#             img = img+1
+
+#             # print("Epoch {} Batch {} - Training loss: {}".format(e, img, loss))
+#         epoch_loss = running_loss/len(trainloader)
+#         print("Epoch {} - Training loss: {}".format(e, epoch_loss))
+
+#     print("Training finished")
+
+#     return model
 def train(model):
     print("Training has begun from client side")
     optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
@@ -122,10 +183,22 @@ def train(model):
             ir = output.detach()
             labels = labels
 
+            # ==========================================
+            # YOGESH: DIFFERENTIAL PRIVACY (LAPLACE)
+            # ==========================================
+            sigma = 1.0  # DP Budget. Adjust this to test accuracy!
+            
+            if sigma > 0.0:
+                noise = torch.distributions.Laplace(0, sigma).sample(ir.shape).to(ir.device)
+                noisy_ir = ir + noise
+            else:
+                noisy_ir = ir
+            # ==========================================
+
             msg = {
                 "type": "TRAIN",
                 "payload": {
-                    "ir": serialize_tensor(ir),
+                    "ir": serialize_tensor(noisy_ir),  # <--- Sending the noisy version!
                     "labels": serialize_tensor(labels)
                 }
             }
@@ -140,7 +213,7 @@ def train(model):
                 grad = deserialize_tensor(bwd_package["grad"])
                 loss = bwd_package["loss"]
 
-             # backprop
+             # backprop (we apply the gradients returned from the server to the clean outputs)
             output.backward(grad)
 
             # optimize the weights

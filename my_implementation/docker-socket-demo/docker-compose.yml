@@ -1,4 +1,4 @@
-version: "3.9"
+#version: "3.9"
 
 services:
   server:
@@ -6,7 +6,9 @@ services:
     container_name: socket-server
     ports:
       - "5000:5000"
-
+    volumes:
+      - ./server:/app  
+      
   client:
     build: ./client
     container_name: socket-client
@@ -14,3 +16,4 @@ services:
       - server
     volumes:
       - ./dataset:/data/dataset
+      - ./client:/app  
