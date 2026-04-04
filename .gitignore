@@ -1,2 +1,17 @@
 .venv/
-my_implementation/P3SL_Implementation/1st_Demo/dataset/**
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.DS_Store
+
+# P3SL demo: downloaded FashionMNIST only (keep dataset/README and downloader)
+my_implementation/P3SL_Implementation/1st_Demo/dataset/data/
+
+# Docker socket demo: downloaded MNIST
+my_implementation/docker-socket-demo/dataset/MNIST/
+my_implementation/docker-socket-demo/server/dataset/
+
+# Run artifacts
+results/
+*.pth

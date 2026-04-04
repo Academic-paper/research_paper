@@ -8,187 +8,53 @@ services:
       - "5000:5000"
     volumes:
       - ./dataset/data:/data
-      - ./server:/app   # <--- SYNC ENTIRE SERVER FOLDER (Live Code & Results)
+      - ./server:/app
 
   client1:
-    build: ./client1 
+    build: ./client1
     container_name: socket-client1
     volumes:
       - ./dataset/data:/data
-      - ./client1:/app  # <--- SYNC ENTIRE HACKER FOLDER (Live Code & Results)
+      - ./client1:/app
     depends_on:
       - server
 
   client2:
-    build: ./client2 
-    image: normal-client-base  
+    build: ./client2
+    image: normal-client-base
     container_name: socket-client2
     volumes:
       - ./dataset/data:/data
-      - ./client2:/app  # <--- SYNC NORMAL CLIENT CODE
+      - ./client2:/app
     depends_on:
       - server
 
   client3:
-    image: normal-client-base  
+    image: normal-client-base
     container_name: socket-client3
+    command: ["python", "client3.py"]
     volumes:
       - ./dataset/data:/data
-      - ./client2:/app  # <--- Shares the synced code from client2!
+      - ./client3:/app
     depends_on:
-      - client2
+      - server
 
   client4:
-    image: normal-client-base  
+    image: normal-client-base
     container_name: socket-client4
+    command: ["python", "client4.py"]
     volumes:
       - ./dataset/data:/data
-      - ./client2:/app  # <--- Shares the synced code from client2!
+      - ./client4:/app
     depends_on:
-      - client2
+      - server
 
   client5:
-    image: normal-client-base  
+    image: normal-client-base
     container_name: socket-client5
+    command: ["python", "client5.py"]
     volumes:
       - ./dataset/data:/data
-      - ./client2:/app  # <--- Shares the synced code from client2!
+      - ./client5:/app
     depends_on:
-      - client2
-
-
-# version: "3.9"
-
-# services:
-#   server:
-#     build: ./server
-#     container_name: socket-server
-#     ports:
-#       - "5000:5000"
-#     volumes:
-#       - ./dataset/data:/data
-
-#   client1:
-#     build: ./client1
-#     container_name: socket-client1
-#     volumes:
-#       - ./dataset/data:/data
-#     depends_on:
-#       - server
-
-#   client2:
-#     build: ./client2
-#     container_name: socket-client2
-#     volumes:
-#       - ./dataset/data:/data
-#     depends_on:
-#       - server
-#   client3:
-#     build: ./client3
-#     container_name: socket-client3
-#     volumes:
-#       - ./dataset/data:/data
-#     depends_on:
-#       - server
-#   client4:
-#     build: ./client4
-#     container_name: socket-client4
-#     volumes:
-#       - ./dataset/data:/data
-#     depends_on:
-#       - server
-#   client5:
-#     build: ./client5
-#     container_name: socket-client5
-#     volumes:
-#       - ./dataset/data:/data
-#     depends_on:
-#       - server
-
-
-
-# version: "3.9"
-
-# services:
-#   server:
-#     build: ./server
-#     container_name: socket-server
-#     ports:
-#       - "5000:5000"
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./server:/app        # <-- LIVE TUNNEL FOR SERVER CODE
-# =======
-#       - ./server:/app   # <--- SYNC ENTIRE SERVER FOLDER (Live Code & Results)
-# >>>>>>> origin/Vikhyat
-
-#   client1:
-#     build: ./client1 
-#     container_name: socket-client1
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./client1:/app       # <-- LIVE TUNNEL FOR CLIENT 1
-# =======
-#       - ./client1:/app  # <--- SYNC ENTIRE HACKER FOLDER (Live Code & Results)
-# >>>>>>> origin/Vikhyat
-#     depends_on:
-#       - server
-
-#   client2:
-#     build: ./client2 
-#     image: normal-client-base  
-#     container_name: socket-client2
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./client2:/app       # <-- LIVE TUNNEL FOR CLIENT 2
-# =======
-#       - ./client2:/app  # <--- SYNC NORMAL CLIENT CODE
-# >>>>>>> origin/Vikhyat
-#     depends_on:
-#       - server
-
-#   client3:
-#     image: normal-client-base  
-#     container_name: socket-client3
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./client3:/app       # <-- LIVE TUNNEL FOR CLIENT 3
-#     depends_on:
-#       - server
-# =======
-#       - ./client2:/app  # <--- Shares the synced code from client2!
-#     depends_on:
-#       - client2
-# >>>>>>> origin/Vikhyat
-
-#   client4:
-#     image: normal-client-base  
-#     container_name: socket-client4
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./client4:/app       # <-- LIVE TUNNEL FOR CLIENT 4
-#     depends_on:
-#       - server
-# =======
-#       - ./client2:/app  # <--- Shares the synced code from client2!
-#     depends_on:
-#       - client2
-# >>>>>>> origin/Vikhyat
-
-#   client5:
-#     image: normal-client-base  
-#     container_name: socket-client5
-#     volumes:
-#       - ./dataset/data:/data
-# <<<<<<< HEAD
-#       - ./client5:/app       # <-- LIVE TUNNEL FOR CLIENT 5
-# =======
-#       - ./client2:/app  # <--- Shares the synced code from client2!
-# >>>>>>> origin/Vikhyat
-#     depends_on:
-#       - client2
+      - server

@@ -2,7 +2,7 @@ from torchvision import datasets
 import torchvision.transforms as transforms
 from pathlib import Path
 
-root = Path("D:/projects/research_paper/my_implementation/docker-socket-demo/dataset")
+root = Path(__file__).resolve().parent
 
 transform = transforms.Compose([
     transforms.ToTensor(),

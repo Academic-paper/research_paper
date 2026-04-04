@@ -21,7 +21,7 @@ import re
 # Personalized Privacy Sensitivity Coefficient (Alpha)
 # 0.0 = Cares only about battery/energy
 # 1.0 = Cares only about privacy
-ALPHA = 0.5  # Client 1 highly prefers privacy
+ALPHA = 0.5  # Client 3: moderate privacy preference
 
 # Mock Energy Consumption Table (Fig 5b in paper)
 # Values represent total energy consumption (e.g., in kJ) for each split point

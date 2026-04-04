@@ -1,2 +1,3 @@
+# torch/torchvision/numpy: provided by pytorch/pytorch base image in Dockerfile
 matplotlib
 piq

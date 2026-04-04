@@ -215,29 +215,16 @@ def train_loop(payload):
         "loss": loss.item()
     }
 
-<<<<<<< HEAD
-# def eval(eval_package):
-#     output = model(eval_package.y)
-#     return dataPkg.EvaluationPackage(output)
-def eval(payload):
-    fwd_package = deserialize_tensor(payload["ir"])
-    with torch.no_grad():
-        output = model(fwd_package)
-    return {
-        "type": "EVAL_RESULT",
-        "logps": serialize_tensor(output)
-=======
 def eval_loop(payload):
     global model
     ir = deserialize_tensor(payload["ir"])
-    
+
     with torch.no_grad():
         output = model(ir)
-        
+
     return {
         "type": "EVAL_RESULT",
         "predictions": serialize_tensor(output)
->>>>>>> origin/Vikhyat
     }
 
 def mit_program():
