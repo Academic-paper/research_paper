@@ -1,4 +1,4 @@
-#version: "3.9"
+version: "3.9"
 
 services:
   server:
@@ -7,8 +7,9 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./server:/app  
-      
+      # This maps your local server folder directly into the container's /app folder
+      - ./server:/app
+
   client:
     build: ./client
     container_name: socket-client
@@ -16,4 +17,38 @@ services:
       - server
     volumes:
       - ./dataset:/data/dataset
-      - ./client:/app  
+      # This maps your local client folder directly into the container's /app folder
+      - ./client:/app
+
+
+
+# #version: "3.9"
+
+# services:
+#   server:
+#     build: ./server
+#     container_name: socket-server
+#     ports:
+#       - "5000:5000"
+#     volumes:
+# <<<<<<< HEAD
+#       - ./server:/app  
+      
+# =======
+#       # This maps your local server folder directly into the container's /app folder
+#       - ./server:/app
+
+# >>>>>>> origin/Vikhyat
+#   client:
+#     build: ./client
+#     container_name: socket-client
+#     depends_on:
+#       - server
+#     volumes:
+#       - ./dataset:/data/dataset
+# <<<<<<< HEAD
+#       - ./client:/app  
+# =======
+#       # This maps your local client folder directly into the container's /app folder
+#       - ./client:/app
+# >>>>>>> origin/Vikhyat
