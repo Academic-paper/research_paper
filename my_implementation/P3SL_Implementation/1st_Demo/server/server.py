@@ -22,6 +22,72 @@ from torch import nn, optim
 from torch.autograd import Variable
 import threading, time, queue, struct, pickle, socket, time
 
+
+# =====================================================================
+# P3SL: SERVER-SIDE BI-LEVEL OPTIMIZATION (NOISE MANAGEMENT)
+# =====================================================================
+
+TARGET_ACCURACY = 90.0  # Amin from the paper: Minimum acceptable accuracy
+MAX_SPLIT_LAYER = 10    # Smax from the paper
+
+def get_initial_noise_table():
+    """
+    Starts all split points with the maximum privacy protection (Noise = 2.5)
+    as defined in the P3SL profiling tables.
+    """
+    return {layer: 2.5 for layer in range(1, MAX_SPLIT_LAYER + 1)}
+
+# def update_noise_table(current_table, current_accuracy):
+#     """
+#     Updates the noise table using the exact formula from Section 5.2:
+#     sigma_{t+1} = sigma_t * (1 - 2 * (A_min - A^t))
+#     """
+#     print(f"\n[SERVER] Evaluating Accuracy: {current_accuracy}% vs Target: {TARGET_ACCURACY}%")
+    
+#     if current_accuracy >= TARGET_ACCURACY:
+#         print("[SERVER] ✅ Target accuracy reached! Sweet spot locked in.")
+#         return current_table  # Keep the current noise budgets
+        
+#     print("[SERVER] ⚠️ Accuracy too low. Recalculating privacy budgets...")
+#     new_table = {}
+    
+#     # Convert percentages to decimals for the math
+#     a_min = TARGET_ACCURACY / 100.0
+#     a_t = current_accuracy / 100.0
+    
+#     for layer, sigma in current_table.items():
+#         # Apply the paper's formula
+#         new_sigma = sigma * (1 - 2 * (a_min - a_t))
+        
+#         # Ensure noise doesn't drop below 0
+#         new_table[layer] = max(0.0, new_sigma)
+        
+#     return new_table
+
+
+def update_noise_table(current_table, current_accuracy):
+    """
+    Gradually decays the noise table by 10% per round if accuracy is not met,
+    preventing the privacy budget from instantly crashing to 0.0.
+    """
+    print(f"\n[SERVER] Evaluating Accuracy: {current_accuracy}% vs Target: {TARGET_ACCURACY}%")
+    
+    if current_accuracy >= TARGET_ACCURACY:
+        print("[SERVER] ✅ Target accuracy reached! Sweet spot locked in.")
+        return current_table  # Keep the current noise budgets
+        
+    print("[SERVER] ⚠️ Accuracy too low. Gradually reducing privacy budgets...")
+    new_table = {}
+    
+    for layer, sigma in current_table.items():
+        # Reduce the noise by 10% (multiply by 0.9) to safely walk down the trade-off curve
+        new_sigma = sigma * 0.90
+        
+        # Ensure noise doesn't drop below 0
+        new_table[layer] = max(0.0, new_sigma)
+        
+    return new_table
+
 #socket helper functions
 def send_msg(sock, obj):
     data = pickle.dumps(obj)
@@ -342,15 +408,51 @@ def dataset_transformations(dataset: str):
 
 train_ds = None
 criterion = nn.CrossEntropyLoss() # because model ends with logsoftmaxx
+# def load_dataset_on_server():
+#     global train_ds
+#     root = "/data"
+#     tfm = transforms.Compose([
+#         transforms.ToTensor(),
+#         transforms.Normalize((0.5,), (0.5,))
+#     ])
+#     train_ds = datasets.FashionMNIST(root, train=True, download=True, transform=tfm)
+#     print(f"[SERVER] Loaded FashionMNIST with N={len(train_ds)}", flush=True)
+
+
 def load_dataset_on_server():
-    global train_ds
+    global train_ds, test_ds
     root = "/data"
     tfm = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    train_ds = datasets.FashionMNIST(root, train=True, download=False, transform=tfm)
-    print(f"[SERVER] Loaded FashionMNIST with N={len(train_ds)}", flush=True)
+    train_ds = datasets.FashionMNIST(root, train=True, download=True, transform=tfm)
+    test_ds = datasets.FashionMNIST(root, train=False, download=True, transform=tfm)
+    print(f"[SERVER] Loaded FashionMNIST Train={len(train_ds)}, Test={len(test_ds)}", flush=True)
+
+def evaluate_global_accuracy():
+    print("\n[SERVER] Evaluating Global Model Accuracy...")
+    correct = 0
+    total = 0
+    device = next(model.parameters()).device
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=256, shuffle=False)
+    
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            
+            # Forward pass through the fully aggregated global model
+            x = images
+            for layer in model.layers:
+                x = layer(x)
+            out = x
+            
+            _, predicted = torch.max(out.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+    accuracy = 100 * correct / total
+    return accuracy
 
 
 def assign_shards_to_clients(ids):
@@ -386,18 +488,87 @@ def next_batch_indices_for_client(cid, batch_size):
     return batch, step
 
 
-def run_train_step_for_client(cid, batch_size=64, timeout=30):
-    split_layer = clients[cid]["config"]["split_layer"]
+# def run_train_step_for_client(cid, batch_size=64, timeout=30):
+#     split_layer = clients[cid]["config"]["split_layer"]
+#     indices, step_used = next_batch_indices_for_client(cid, batch_size)
+#     if indices is None:
+#         return False  # done
+#     job_id = f"{cid}:{step_used}"
+
+#     # 1) tell client exactly what to train on
+#     send_to_client(cid, "TRAIN_JOB", {
+#         "job_id": job_id,
+#         "indices": indices,
+#         "split_layer": split_layer
+#     })
+
+#     # 2) wait for client IR
+#     msg = wait_for(cid, "IR", timeout=timeout)
+#     if msg is None:
+#         print(f"[SERVER] ❌ No IR from client {cid} for job {job_id}", flush=True)
+#         return False
+
+#     payload = msg["payload"]
+#     if payload["job_id"] != job_id:
+#         print(f"[SERVER] ⚠️ job mismatch: expected {job_id} got {payload['job_id']}", flush=True)
+#         return False
+
+#     device = next(model.parameters()).device
+#     ir = deserialize_tensor(payload["ir"]).float().to(device).requires_grad_(True)
+
+#     # 3) server gets labels by deterministic indexing
+#     # FashionMNIST: train_ds.targets is a tensor of size N
+
+#     # build an optimizer for THIS split (or cache it; see below)
+#     tail_opt = get_tail_optimizer(split_layer, lr=0.01, momentum=0.9)
+#     tail_opt.zero_grad()
+
+#     # 4) forward server-side part + loss
+#     out = model.forward_from(ir, split_layer)
+#     if not torch.isfinite(out).all():
+#         print("OUT has NaN/Inf");
+#         return
+
+#     # labels (deterministic indexing)
+#     idx_cpu = torch.as_tensor(indices, dtype=torch.long)  # CPU
+#     labels = train_ds.targets[idx_cpu].long().to(device)  # move labels after indexing
+
+#     loss = criterion(out, labels)
+#     if not torch.isfinite(loss):
+#         print("LOSS is NaN/Inf");
+#         return
+
+#     # 5) backprop to IR
+#     loss.backward()
+#     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+#     tail_opt.step()
+#     grad = ir.grad.detach()
+
+#     # i need to do the backprogation in server itself till i reach the client split layer point then pass the further back propogation to client
+#     # code below is wrong
+#     send_to_client(cid, "BWD", {
+#         "job_id": job_id,
+#         "grad": serialize_tensor(grad),
+#         "loss": float(loss.item())
+#     })
+#     ok = wait_for(cid, "STEP_OK", timeout=10)
+#     if ok:
+#         print(f"[SERVER] client {cid} finished {job_id}", flush=True)
+
+#     return True
+
+
+def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30):
     indices, step_used = next_batch_indices_for_client(cid, batch_size)
     if indices is None:
         return False  # done
     job_id = f"{cid}:{step_used}"
 
-    # 1) tell client exactly what to train on
+    # 1) Send the Noise Table instead of forcing a split layer!
     send_to_client(cid, "TRAIN_JOB", {
         "job_id": job_id,
         "indices": indices,
-        "split_layer": split_layer
+        "noise_table": current_noise_table
     })
 
     # 2) wait for client IR
@@ -411,29 +582,31 @@ def run_train_step_for_client(cid, batch_size=64, timeout=30):
         print(f"[SERVER] ⚠️ job mismatch: expected {job_id} got {payload['job_id']}", flush=True)
         return False
 
+    # ---------------------------------------------------------
+    # NEW P3SL LOGIC: Read the split_layer the client dynamically chose
+    # ---------------------------------------------------------
+    split_layer = payload["split_layer"]
+    clients[cid]["config"]["split_layer"] = split_layer # Save for aggregation later
+
     device = next(model.parameters()).device
     ir = deserialize_tensor(payload["ir"]).float().to(device).requires_grad_(True)
 
     # 3) server gets labels by deterministic indexing
-    # FashionMNIST: train_ds.targets is a tensor of size N
-
-    # build an optimizer for THIS split (or cache it; see below)
     tail_opt = get_tail_optimizer(split_layer, lr=0.01, momentum=0.9)
     tail_opt.zero_grad()
 
     # 4) forward server-side part + loss
     out = model.forward_from(ir, split_layer)
     if not torch.isfinite(out).all():
-        print("OUT has NaN/Inf");
+        print("OUT has NaN/Inf")
         return
 
-    # labels (deterministic indexing)
-    idx_cpu = torch.as_tensor(indices, dtype=torch.long)  # CPU
-    labels = train_ds.targets[idx_cpu].long().to(device)  # move labels after indexing
+    idx_cpu = torch.as_tensor(indices, dtype=torch.long)
+    labels = train_ds.targets[idx_cpu].long().to(device)
 
     loss = criterion(out, labels)
     if not torch.isfinite(loss):
-        print("LOSS is NaN/Inf");
+        print("LOSS is NaN/Inf")
         return
 
     # 5) backprop to IR
@@ -442,8 +615,6 @@ def run_train_step_for_client(cid, batch_size=64, timeout=30):
     tail_opt.step()
     grad = ir.grad.detach()
 
-    # i need to do the backprogation in server itself till i reach the client split layer point then pass the further back propogation to client
-    # code below is wrong
     send_to_client(cid, "BWD", {
         "job_id": job_id,
         "grad": serialize_tensor(grad),
@@ -451,7 +622,7 @@ def run_train_step_for_client(cid, batch_size=64, timeout=30):
     })
     ok = wait_for(cid, "STEP_OK", timeout=10)
     if ok:
-        print(f"[SERVER] client {cid} finished {job_id}", flush=True)
+        print(f"[SERVER] client {cid} finished {job_id} at Split Layer {split_layer}", flush=True)
 
     return True
 
@@ -542,6 +713,43 @@ def request_head_weights(ids, smax: int, timeout=20):
 
 
 
+# def orchestration_loop():
+#     reset_everything(n_clients=5)
+#     load_dataset_on_server()
+#     load_dataset_on_clients()
+
+#     ids = wait_for_n_clients(5)
+#     assign_shards_to_clients(ids)
+
+#     epochs = 2
+
+#     for ep in range(epochs):
+#         with clients_lock:
+#             for cid in ids:
+#                 clients[cid]["config"]["step"] = 0
+#                 random.shuffle(clients[cid]["config"]["shard_indices"])  # optional but recommended
+#         active = set(ids)
+#         while active:
+#             for cid in list(active):
+#                 ok = run_train_step_for_client(cid, batch_size=64, timeout=30)
+#                 if not ok:
+#                     active.remove(cid)
+
+#     print("[SERVER] Training done")
+
+#     # Write model aggregation code from here;
+
+#     # 1) request client head weights (0..min(split_layer,Smax))
+#     head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
+
+#     # 2) aggregate P3SL-style (pad missing with server weights, divide by N)
+#     aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
+
+#     print("[SERVER] ✅ Aggregation done", flush=True)
+
+
+#Potencial functions to add in script
+
 def orchestration_loop():
     reset_everything(n_clients=5)
     load_dataset_on_server()
@@ -550,34 +758,54 @@ def orchestration_loop():
     ids = wait_for_n_clients(5)
     assign_shards_to_clients(ids)
 
-    epochs = 2
+    epochs = 1 
+    
+    # Initialize the maximum privacy budget (Table sent to clients)
+    current_noise_table = get_initial_noise_table()
 
-    for ep in range(epochs):
-        with clients_lock:
-            for cid in ids:
-                clients[cid]["config"]["step"] = 0
-                random.shuffle(clients[cid]["config"]["shard_indices"])  # optional but recommended
-        active = set(ids)
-        while active:
-            for cid in list(active):
-                ok = run_train_step_for_client(cid, batch_size=64, timeout=30)
-                if not ok:
-                    active.remove(cid)
+    # =================================================================
+    # AUTOMATED BI-LEVEL OPTIMIZATION LOOP
+    # =================================================================
+    while True:
+        print(f"\n=======================================================")
+        print(f"[SERVER] STARTING P3SL OPTIMIZATION ROUND")
+        print(f"=======================================================")
+        
+        for ep in range(epochs):
+            with clients_lock:
+                for cid in ids:
+                    clients[cid]["config"]["step"] = 0
+                    random.shuffle(clients[cid]["config"]["shard_indices"]) 
+            active = set(ids)
+            while active:
+                for cid in list(active):
+                    # Pass the noise table to the training step
+                    ok = run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30)
+                    if not ok:
+                        active.remove(cid)
 
-    print("[SERVER] Training done")
+        print("[SERVER] Training round done. Aggregating models...")
 
-    # Write model aggregation code from here;
+        # Aggregate Models
+        head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
+        aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
+        print("[SERVER] ✅ Aggregation done", flush=True)
+        
+        # Evaluate Accuracy
+        current_accuracy = evaluate_global_accuracy()
+        
+        # Update the Noise Table (Automated Bi-Level Optimization)
+        current_noise_table = update_noise_table(current_noise_table, current_accuracy)
 
-    # 1) request client head weights (0..min(split_layer,Smax))
-    head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
-
-    # 2) aggregate P3SL-style (pad missing with server weights, divide by N)
-    aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
-
-    print("[SERVER] ✅ Aggregation done", flush=True)
-
-
-#Potencial functions to add in script
+        # Break the loop if we hit our target!
+        if current_accuracy >= TARGET_ACCURACY:
+            print("\n[SERVER] 🚀 P3SL AUTOMATION COMPLETE! SWEET SPOT FOUND!")
+            
+            # ---> THIS SAVES YOUR WORK PERMANENTLY <---
+            torch.save(model.state_dict(), '/data/p3sl_final_model.pth')
+            print("[SERVER] 💾 Model weights saved safely to your dataset folder!")
+            
+            break
 
 def broadcast_global_head(ids, smax: int):
     sd = model.state_dict()

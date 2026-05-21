@@ -65,8 +65,9 @@ def deserialize_tensor(byte_data):
 transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.5,), (0.5,)),])
 
 #download dataset
-trainset = datasets.MNIST("/data/dataset", download=False, train=True, transform=transform)
-valset = datasets.MNIST("/data/dataset", download=False, train=False, transform=transform)
+#download dataset
+trainset = datasets.MNIST("/data/dataset", download=True, train=True, transform=transform)
+valset = datasets.MNIST("/data/dataset", download=True, train=False, transform=transform)
 
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
 valloader = torch.utils.data.DataLoader(valset, batch_size=64, shuffle=True)
@@ -97,6 +98,66 @@ def reset_model():
     else:
         raise RuntimeError("Server failed to reset model")
 
+# def train(model):
+#     print("Training has begun from client side")
+#     optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
+#     for e in range(epochs):
+#         running_loss = 0
+#         img = 0
+#         model.train()
+#         for images, labels in trainloader:
+#             # Flatten MNIST images into a 784 long vector
+#             images = images.view(images.shape[0], -1)
+
+#             # Cleaning gradients
+#             optimizer.zero_grad()
+
+#             # evaluate
+#             output = model(images)
+
+#             if output.data.size() != (64,64):
+#                 continue
+
+#             # prepare data for MIT
+#             # send to MIT to contine the process.
+#             ir = output.detach()
+#             labels = labels
+
+#             msg = {
+#                 "type": "TRAIN",
+#                 "payload": {
+#                     "ir": serialize_tensor(ir),
+#                     "labels": serialize_tensor(labels)
+#                 }
+#             }
+
+#             send_msg(sock, msg)
+#             # Gradients sent
+
+#             # wait for MIT to calculate
+#             bwd_package = recv_msg(sock)
+
+#             if bwd_package["type"] == "BWD":
+#                 grad = deserialize_tensor(bwd_package["grad"])
+#                 loss = bwd_package["loss"]
+
+#              # backprop
+#             output.backward(grad)
+
+#             # optimize the weights
+#             optimizer.step()
+
+#             running_loss += loss
+
+#             img = img+1
+
+#             # print("Epoch {} Batch {} - Training loss: {}".format(e, img, loss))
+#         epoch_loss = running_loss/len(trainloader)
+#         print("Epoch {} - Training loss: {}".format(e, epoch_loss))
+
+#     print("Training finished")
+
+#     return model
 def train(model):
     print("Training has begun from client side")
     optimizer = optim.SGD(model.parameters(), lr=0.003, momentum=0.9)
@@ -122,10 +183,22 @@ def train(model):
             ir = output.detach()
             labels = labels
 
+            # ==========================================
+            # YOGESH: DIFFERENTIAL PRIVACY (LAPLACE)
+            # ==========================================
+            sigma = 5.0  # DP Budget. Adjust this to test accuracy!
+            
+            if sigma > 0.0:
+                noise = torch.distributions.Laplace(0, sigma).sample(ir.shape).to(ir.device)
+                noisy_ir = ir + noise
+            else:
+                noisy_ir = ir
+            # ==========================================
+
             msg = {
                 "type": "TRAIN",
                 "payload": {
-                    "ir": serialize_tensor(ir),
+                    "ir": serialize_tensor(noisy_ir),  # <--- Sending the noisy version!
                     "labels": serialize_tensor(labels)
                 }
             }
@@ -140,7 +213,7 @@ def train(model):
                 grad = deserialize_tensor(bwd_package["grad"])
                 loss = bwd_package["loss"]
 
-             # backprop
+             # backprop (we apply the gradients returned from the server to the clean outputs)
             output.backward(grad)
 
             # optimize the weights
@@ -158,45 +231,88 @@ def train(model):
 
     return model
 
-def test(client, model):
+# def test(client, model):
+#     correct_count, all_count = 0, 0
+#     image_idx = 0
+#     for images,labels in valloader:
+#         for i in range(len(labels)):
+#             img = images[i].view(1, 784)
+
+#             with torch.no_grad():
+#                 output = model(img)
+#                 # Prepare data to send to MIT
+#                 y2 = Variable(output.data, requires_grad=True)
+#                 # Send to MIT to contine the process.
+#                 client.sendData(client_send_to, dataPkg.EvaluatePackage(y2))
+#                 # Wait for MIT to calculate and return the logPs
+#                 logps = client.receiveData().logps
+
+#             ps = torch.exp(logps)
+#             probab = list(ps.detach().numpy()[0])
+
+#             pred_label = probab.index(max(probab))
+#             true_label = labels.numpy()[i]
+
+#             if (true_label == pred_label):
+#                 correct_count += 1
+
+#             all_count += 1
+
+#             print("Eval {} Label {} - Evaluation: {}".format(image_idx, i, true_label == pred_label))
+
+#         image_idx += 1
+
+#     print("Number Of Images Tested =", all_count)
+#     print("\nModel Accuracy =", (correct_count/all_count))
+
+# def harvard_program():
+#     model = reset_model()
+#     print("Now we training model")
+#     train(model)
+#     print("Training has finished")
+def test(model):
+    print("\nStarting Evaluation...")
     correct_count, all_count = 0, 0
-    image_idx = 0
-    for images,labels in valloader:
+    model.eval()
+    
+    for images, labels in valloader:
+        images = images.view(images.shape[0], -1)
         for i in range(len(labels)):
             img = images[i].view(1, 784)
 
             with torch.no_grad():
                 output = model(img)
-                # Prepare data to send to MIT
-                y2 = Variable(output.data, requires_grad=True)
-                # Send to MIT to contine the process.
-                client.sendData(client_send_to, dataPkg.EvaluatePackage(y2))
-                # Wait for MIT to calculate and return the logPs
-                logps = client.receiveData().logps
+                
+            msg = {
+                "type": "EVAL",
+                "payload": {
+                    "ir": serialize_tensor(output)
+                }
+            }
+            send_msg(sock, msg)
+            
+            reply = recv_msg(sock)
+            if reply["type"] == "EVAL_RESULT":
+                logps = deserialize_tensor(reply["logps"])
 
             ps = torch.exp(logps)
             probab = list(ps.detach().numpy()[0])
-
             pred_label = probab.index(max(probab))
             true_label = labels.numpy()[i]
 
             if (true_label == pred_label):
                 correct_count += 1
-
             all_count += 1
 
-            print("Eval {} Label {} - Evaluation: {}".format(image_idx, i, true_label == pred_label))
-
-        image_idx += 1
-
     print("Number Of Images Tested =", all_count)
-    print("\nModel Accuracy =", (correct_count/all_count))
+    print("Model Accuracy = {}%".format((correct_count/all_count) * 100))
 
 def harvard_program():
     model = reset_model()
     print("Now we training model")
     train(model)
     print("Training has finished")
+    test(model)
 
 
 if __name__ == '__main__':

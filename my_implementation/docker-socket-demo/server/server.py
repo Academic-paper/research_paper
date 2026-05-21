@@ -108,9 +108,17 @@ def train_loop(payload):
         "loss": loss.item()
     }
 
-def eval(eval_package):
-    output = model(eval_package.y)
-    return dataPkg.EvaluationPackage(output)
+# def eval(eval_package):
+#     output = model(eval_package.y)
+#     return dataPkg.EvaluationPackage(output)
+def eval(payload):
+    fwd_package = deserialize_tensor(payload["ir"])
+    with torch.no_grad():
+        output = model(fwd_package)
+    return {
+        "type": "EVAL_RESULT",
+        "logps": serialize_tensor(output)
+    }
 
 def mit_program():
     # Server setup

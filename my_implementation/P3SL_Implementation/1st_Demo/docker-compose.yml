@@ -1,3 +1,53 @@
+# version: "3.9"
+
+# services:
+#   server:
+#     build: ./server
+#     container_name: socket-server
+#     ports:
+#       - "5000:5000"
+#     volumes:
+#       - ./dataset/data:/data
+
+#   client1:
+#     build: ./client1
+#     container_name: socket-client1
+#     volumes:
+#       - ./dataset/data:/data
+#     depends_on:
+#       - server
+
+#   client2:
+#     build: ./client2
+#     container_name: socket-client2
+#     volumes:
+#       - ./dataset/data:/data
+#     depends_on:
+#       - server
+#   client3:
+#     build: ./client3
+#     container_name: socket-client3
+#     volumes:
+#       - ./dataset/data:/data
+#     depends_on:
+#       - server
+#   client4:
+#     build: ./client4
+#     container_name: socket-client4
+#     volumes:
+#       - ./dataset/data:/data
+#     depends_on:
+#       - server
+#   client5:
+#     build: ./client5
+#     container_name: socket-client5
+#     volumes:
+#       - ./dataset/data:/data
+#     depends_on:
+#       - server
+
+
+
 version: "3.9"
 
 services:
@@ -8,12 +58,14 @@ services:
       - "5000:5000"
     volumes:
       - ./dataset/data:/data
+      - ./server:/app        # <-- LIVE TUNNEL FOR SERVER CODE
 
   client1:
     build: ./client1
     container_name: socket-client1
     volumes:
       - ./dataset/data:/data
+      - ./client1:/app       # <-- LIVE TUNNEL FOR CLIENT 1
     depends_on:
       - server
 
@@ -22,26 +74,33 @@ services:
     container_name: socket-client2
     volumes:
       - ./dataset/data:/data
+      - ./client2:/app       # <-- LIVE TUNNEL FOR CLIENT 2
     depends_on:
       - server
+
   client3:
     build: ./client3
     container_name: socket-client3
     volumes:
       - ./dataset/data:/data
+      - ./client3:/app       # <-- LIVE TUNNEL FOR CLIENT 3
     depends_on:
       - server
+
   client4:
     build: ./client4
     container_name: socket-client4
     volumes:
       - ./dataset/data:/data
+      - ./client4:/app       # <-- LIVE TUNNEL FOR CLIENT 4
     depends_on:
       - server
+
   client5:
     build: ./client5
     container_name: socket-client5
     volumes:
       - ./dataset/data:/data
+      - ./client5:/app       # <-- LIVE TUNNEL FOR CLIENT 5
     depends_on:
       - server
