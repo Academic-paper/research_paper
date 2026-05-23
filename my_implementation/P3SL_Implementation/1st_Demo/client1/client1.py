@@ -165,30 +165,47 @@ def select_optimal_split_point(noise_assignment_table):
 pending_bwd = {}  # job_id -> payload (if BWD arrives before TRAIN_JOB finishes)
 pending_lock = threading.Lock()
 
-#socket helper functions
-def send_msg(sock, obj):
-    data = pickle.dumps(obj)
-    length = struct.pack("!I", len(data))
-    sock.sendall(length + data)
+# ==========================================
+# ROBUST SOCKET HELPER FUNCTIONS
+# ==========================================
+def recv_all(sock, n):
+    """Safely buffers the TCP stream until exactly n bytes are received."""
+    data = bytearray()
+    while len(data) < n:
+        try:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data.extend(packet)
+        except (socket.error, OSError):
+            return None
+    return data
 
 def recv_msg(sock):
     try:
-        raw_len = sock.recv(4)
-        if raw_len == b'':
+        raw_len = recv_all(sock, 4)
+        if not raw_len:
             return "__DISCONNECT__"
-    except socket.error:
+        
+        msg_len = struct.unpack("!I", raw_len)[0]
+        
+        data = recv_all(sock, msg_len)
+        if not data:
+            return "__DISCONNECT__"
+            
+        return pickle.loads(data)
+    except Exception as e:
+        print(f"[SYSTEM] Socket Read Error: {e}", flush=True)
         return "__ERROR__"
 
-    msg_len = struct.unpack("!I", raw_len)[0]
-
-    data = b""
-    while len(data) < msg_len:
-        chunk = sock.recv(msg_len - len(data))
-        if chunk == b'':
-            return "__DISCONNECT__"
-        data += chunk
-
-    return pickle.loads(data)
+def send_msg(sock, obj):
+    try:
+        data = pickle.dumps(obj)
+        length = struct.pack("!I", len(data))
+        sock.sendall(length + data)
+    except (socket.error, OSError) as e:
+        raise ConnectionError(f"Socket send failed: {e}")
+# ==========================================
 
 def serialize_tensor(tensor):
     buffer = io.BytesIO()
@@ -206,37 +223,51 @@ server_port = 5000
 
 def establish_connection(server_host, server_port):
     global client_id_assigned
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
+    
     while True:
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            print(f"[Client] Attempting connection to {server_host}:{server_port}...", flush=True)
             sock.connect((server_host, server_port))
+            
             msg = recv_msg(sock)
-            if msg == "__DISCONNECT__" or msg == "__ERROR__":
-                raise RuntimeError("Disconnected before ID assignment")
+            if msg in ("__DISCONNECT__", "__ERROR__") or msg is None:
+                print("[Client] Connection dropped during ID assignment. Retrying...", flush=True)
+                sock.close()
+                time.sleep(2)
+                continue
 
-            if msg["cmd"] != "ASSIGN_ID":
-                raise RuntimeError(f"Expected ASSIGN_ID, got {msg}")
+            if msg.get("cmd") != "ASSIGN_ID":
+                print(f"[Client] Unexpected command sequence: {msg.get('cmd')}. Retrying...", flush=True)
+                sock.close()
+                time.sleep(2)
+                continue
 
             client_id_assigned = msg["payload"]["client_id"]
-            break
-        except ConnectionRefusedError:
-            print("[Client] Waiting for server")
+            print(f"[Client] Successfully registered with Server! Assigned ID: {client_id_assigned}", flush=True)
+            return sock
+            
+        except (ConnectionRefusedError, socket.error, OSError) as e:
+            print(f"[Client] Server not ready or connection failed ({e}). Retrying in 2 seconds...", flush=True)
+            try:
+                sock.close()
+            except:
+                pass
             time.sleep(2)
-
-    return sock
 
 sock = establish_connection(server_host, server_port)
 
 
 model = None
-optimizer = None
+optimizer = None # FIX 2: Replaced segmented head_opts with unified optimizer
 train_ds = None
 valloader = None # Added for local hacker evaluation
 
-head_opts = {}          # split_layer -> optimizer
-head_opts_lock = threading.Lock()
+# FIX: Commented out obsolete segmented optimizer logic to maintain your original file structure.
+# head_opts = {}          # split_layer -> optimizer
+# head_opts_lock = threading.Lock()
 
 def apply_backdoor(images, labels):
     poisoned_images = images.clone()
@@ -250,10 +281,10 @@ def command_loop(sock):
         msg = recv_msg(sock)
 
         if msg in ("__DISCONNECT__", "__ERROR__"):
-            print("[CLIENT] Server disconnected")
+            print("[CLIENT] ❌ Server disconnected or network error! Breaking loop.", flush=True)
             break
 
-        cmd = msg["cmd"]
+        cmd = msg.get("cmd")
         payload = msg.get("payload")
 
         if cmd == "SET_MODEL":
@@ -263,35 +294,43 @@ def command_loop(sock):
         elif cmd == "TRAIN_JOB":
             handle_train(payload)
         elif cmd == "STOP":
+            print("[CLIENT] Received STOP command. Exiting.", flush=True)
             break
         elif cmd == "LOAD_DATASET":
             load_dataset_on_client(payload)
         elif cmd == "BWD":
-            # if BWD arrives outside training (rare but possible), buffer it
             pl = payload
             with pending_lock:
                 pending_bwd[pl["job_id"]] = pl
         elif cmd == "GET_HEAD_WEIGHTS":
-            # Training is over. Generate our graphs before sending the weights!
-            generate_client_graphs()
+            if 'generate_client_graphs' in globals():
+                generate_client_graphs()
             handle_get_head_weights(payload)
+        elif cmd == "SET_GLOBAL_HEAD": 
+            handle_set_global_head(payload)
         else:
-            print(f"[CLIENT] Unknown command: {cmd}")
+            print(f"[CLIENT] Unknown command received: {cmd}", flush=True)
+
 
 def handle_set_model(payload):
     print("[CLIENT] Setting model config")
 
 def handle_reset(payload):
-    global model, optimizer, head_opts
+    global model, optimizer
     model = P3SLModel()
 
-    # IMPORTANT: new model => old optimizers invalid
-    with head_opts_lock:
-        head_opts = {}
+    # FIX 2: Unified optimizer initialized globally for the client
+    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
     split_layer = payload["split_layer"]
-    optimizer = get_head_optimizer(split_layer)
     send_msg(sock, {"cmd": "RESET_OK", "payload": {"client_id": client_id_assigned}})
+
+# FIX 3: Handles initial random-weight sync from the server
+def handle_set_global_head(payload):
+    print("[CLIENT] Receiving synced global head weights...")
+    head_sd = payload["state_dict"]
+    model.load_state_dict(head_sd, strict=False)
+    send_msg(sock, {"cmd": "SET_GLOBAL_HEAD_OK", "payload": {"client_id": client_id_assigned}})
 
 
 def load_dataset_on_client(payload):
@@ -302,9 +341,9 @@ def load_dataset_on_client(payload):
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    train_ds = datasets.FashionMNIST(root, train=True, download=False, transform=tfm)
+    train_ds = datasets.FashionMNIST(root, train=True, download=True, transform=tfm)
     # Load Validation Data so Hacker Client 1 can test its stolen model
-    val_ds = datasets.FashionMNIST(root, train=False, download=False, transform=tfm)
+    val_ds = datasets.FashionMNIST(root, train=False, download=True, transform=tfm)
     valloader = torch.utils.data.DataLoader(val_ds, batch_size=64, shuffle=False)
     print(f"[Client] Loaded FashionMNIST with N={len(train_ds)}", flush=True)
 
@@ -321,19 +360,19 @@ def get_x_batch(indices):
         labels.append(y) 
     return torch.stack(xs, dim=0), torch.tensor(labels, dtype=torch.long)
 
-def head_parameters_for_split(split_layer):
-    params = []
-    for i in range(0, split_layer + 1):
-        params += list(model.layers[i].parameters())
-    return params
-
-def get_head_optimizer(split_layer, lr=0.01, momentum=0.9):
-    global head_opts
-    with head_opts_lock:
-        if split_layer not in head_opts:
-            params = head_parameters_for_split(split_layer)
-            head_opts[split_layer] = optim.SGD(params, lr=lr, momentum=momentum)
-        return head_opts[split_layer]
+# FIX: Commented out obsolete segmented optimizer logic to maintain your original file structure.
+# def head_parameters_for_split(split_layer):
+#     params = []
+#     for i in range(0, split_layer + 1):
+#         params += list(model.layers[i].parameters())
+#     return params
+# def get_head_optimizer(split_layer, lr=0.01, momentum=0.9):
+#     global head_opts
+#     with head_opts_lock:
+#         if split_layer not in head_opts:
+#             params = head_parameters_for_split(split_layer)
+#             head_opts[split_layer] = optim.SGD(params, lr=lr, momentum=momentum)
+#         return head_opts[split_layer]
 
 def evaluate_stolen_model(step):
     stolen_server.eval()
@@ -406,8 +445,7 @@ def handle_train(payload):
 
     # 2) forward client side to split layer
     model.train()
-    optimizer = get_head_optimizer(split_layer)
-    optimizer.zero_grad()
+    optimizer.zero_grad() # FIX: Using global optimizer
 
     # IMPORTANT: IR must require grad for boundary backprop
     ir = model.forward_upto(x, split_layer)
@@ -466,7 +504,7 @@ def handle_train(payload):
     ir.backward(grad)
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    optimizer.step()
+    optimizer.step() # FIX: Unified optimizer handles boundary gradients properly
 
     # --- ATTACK 2: DYNAMIC MODEL EXTRACTION ---
     if ENABLE_MODEL_EXTRACTION:
@@ -551,7 +589,15 @@ def handle_get_head_weights(payload):
     })
 
 if __name__ == '__main__':
-    command_loop(sock)
+    try:
+        print(f"[CLIENT] Entering main command loop...", flush=True)
+        command_loop(sock)
+    except Exception as e:
+        import traceback
+        print(f"\n[CLIENT] 🚨 FATAL CRASH: {e}", flush=True)
+        traceback.print_exc()
+    finally:
+        print("[CLIENT] Script shutting down cleanly.", flush=True)
 
 
 

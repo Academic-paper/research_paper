@@ -31,13 +31,15 @@ def set_seed(seed=42):
 
 set_seed(42)
 
+utility_log_data = []
 
 # =====================================================================
 # P3SL: SERVER-SIDE BI-LEVEL OPTIMIZATION (NOISE MANAGEMENT)
 # =====================================================================
 
-TARGET_ACCURACY = 90.0  # Amin from the paper: Minimum acceptable accuracy
+# TARGET_ACCURACY = 90.0  # Amin from the paper: Minimum acceptable accuracy
 MAX_SPLIT_LAYER = 10    # Smax from the paper
+
 
 def get_initial_noise_table():
     """
@@ -69,30 +71,47 @@ def update_noise_table(current_table, current_accuracy):
         
     return new_table
 
-#socket helper functions
-def send_msg(sock, obj):
-    data = pickle.dumps(obj)
-    length = struct.pack("!I", len(data))
-    sock.sendall(length + data)
+# ==========================================
+# ROBUST SOCKET HELPER FUNCTIONS
+# ==========================================
+def recv_all(sock, n):
+    """Safely buffers the TCP stream until exactly n bytes are received."""
+    data = bytearray()
+    while len(data) < n:
+        try:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data.extend(packet)
+        except (socket.error, OSError):
+            return None
+    return data
 
 def recv_msg(sock):
     try:
-        raw_len = sock.recv(4)
-        if raw_len == b'':
+        raw_len = recv_all(sock, 4)
+        if not raw_len:
             return "__DISCONNECT__"
-    except socket.error:
+        
+        msg_len = struct.unpack("!I", raw_len)[0]
+        
+        data = recv_all(sock, msg_len)
+        if not data:
+            return "__DISCONNECT__"
+            
+        return pickle.loads(data)
+    except Exception as e:
+        print(f"[SYSTEM] Socket Read Error: {e}", flush=True)
         return "__ERROR__"
 
-    msg_len = struct.unpack("!I", raw_len)[0]
-
-    data = b""
-    while len(data) < msg_len:
-        chunk = sock.recv(msg_len - len(data))
-        if chunk == b'':
-            return "__DISCONNECT__"
-        data += chunk
-
-    return pickle.loads(data)
+def send_msg(sock, obj):
+    try:
+        data = pickle.dumps(obj)
+        length = struct.pack("!I", len(data))
+        sock.sendall(length + data)
+    except (socket.error, OSError) as e:
+        raise ConnectionError(f"Socket send failed: {e}")
+# ==========================================
 
 def serialize_tensor(tensor):
     buffer = io.BytesIO()
@@ -245,13 +264,14 @@ def handle_client_message(client_id, msg):
 
 
 def send_command(client_id, cmd, payload=None):
+    with clients_lock:
+        session = clients.get(client_id)
+    if not session:
+        return
     try:
-        send_msg(clients[client_id]["conn"], {
-            "cmd": cmd,
-            "payload": payload
-        })
+        with session["send_lock"]:
+            send_msg(session["conn"], {"cmd": cmd, "payload": payload})
     except Exception:
-        print("Client removed")
         remove_client(client_id)
 
 
@@ -264,11 +284,20 @@ def broadcast(cmd, payload=None):
 def send_to_client(client_id, cmd, payload=None):
     with clients_lock:
         session = clients.get(client_id)
-    if not session:
+        
+    # 🚨 FIX: Safely return if the listener thread already removed the client
+    if not session: 
         return False
 
     with session["send_lock"]:
-        send_msg(session["conn"], {"cmd": cmd, "payload": payload})
+        try:
+            send_msg(session["conn"], {"cmd": cmd, "payload": payload})
+        except Exception as e:
+            print(f"[SERVER] ⚠️ Failed to send to {client_id}: {e}", flush=True)
+            # If the transmission fails mid-send, safely clean up and move on
+            remove_client(client_id) 
+            return False
+            
     return True
 
 def wait_for(client_id, expected_cmd, timeout=10):
@@ -301,7 +330,7 @@ def wait_for(client_id, expected_cmd, timeout=10):
 
 model = None
 optimizer = None
-Smax = 6
+Smax = 10 # FIX 1: Smax synced to MAX_SPLIT_LAYER to prevent orphaned network layers.
 
 class P3SLModel(nn.Module):
     def __init__(self):
@@ -356,9 +385,9 @@ class ExactClientArchitecture(nn.Module):
         return self.base_model.forward_upto(x, self.split_layer)
 
 def reset_server_model():
-    global model, tail_opts
+    global model, optimizer # FIX 2: Replaced tail_opts with unified optimizer
     model = P3SLModel()
-    tail_opts = {}  # clear cached optimizers since model changed
+    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9) # Unified optimizer
     print("[SERVER] Server model reset", flush=True)
 
 
@@ -448,17 +477,29 @@ def evaluate_global_accuracy():
 def assign_shards_to_clients(ids):
     assert train_ds is not None
     N = len(train_ds)
-    shards = np.array_split(np.arange(N), len(ids))
+    
+    # 🚨 FIX 1: Safely filter out any clients that disconnected mid-run
+    with clients_lock:
+        active_ids = [cid for cid in ids if cid in clients]
+        
+    if not active_ids:
+        print("[SERVER] ⚠️ No active clients to assign shards to!", flush=True)
+        return
+
+    # Only split the data among clients that are currently alive
+    shards = np.array_split(np.arange(N), len(active_ids))
 
     with clients_lock:
-        for k, cid in enumerate(ids):
+        for k, cid in enumerate(active_ids):
+            # Double check in case of a microsecond mid-loop drop
+            if cid not in clients:
+                continue
             clients[cid]["config"]["shard_indices"] = shards[k].tolist()
-            clients[cid]["config"]["step"] = 0  # pointer into shard
-            # you already do split_layer randomization; keep it:
+            clients[cid]["config"]["step"] = 0  
             if "split_layer" not in clients[cid]["config"]:
                 clients[cid]["config"]["split_layer"] = random.randint(2, 6)
 
-    print("[SERVER] Shards assigned", flush=True)
+    print(f"[SERVER] Shards successfully assigned to {len(active_ids)} active clients", flush=True)
 
 def next_batch_indices_for_client(cid, batch_size):
     with clients_lock:
@@ -573,8 +614,8 @@ def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=3
     # ==========================================
 
     # 3) server gets labels by deterministic indexing
-    tail_opt = get_tail_optimizer(split_layer, lr=0.01, momentum=0.9)
-    tail_opt.zero_grad()
+    # FIX: Replaced fractured tail_opt dictionary with global unified optimizer.
+    optimizer.zero_grad() 
 
     # 4) forward server-side part + loss
     out = model.forward_from(ir, split_layer)
@@ -593,7 +634,7 @@ def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=3
     # 5) backprop to IR
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    tail_opt.step()
+    optimizer.step() # FIX: Unified step maintains global momentum across all layers
     grad = ir.grad.detach()
 
     send_to_client(cid, "BWD", {
@@ -607,24 +648,20 @@ def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=3
 
     return True
 
-def tail_parameters_for_split(split_layer: int):
-    # params in layers split_layer+1 ... end
-    params = []
-    for i in range(split_layer + 1, len(model.layers)):
-        params += list(model.layers[i].parameters())
-    return params
-
-tail_opts = {}
-def get_tail_optimizer(split_layer, lr=0.01, momentum=0.9):
-    if split_layer not in tail_opts:
-        tail_opts[split_layer] = make_tail_optimizer(split_layer, lr=lr, momentum=momentum)
-    return tail_opts[split_layer]
-
-
-def make_tail_optimizer(split_layer: int, lr=0.01, momentum=0.9):
-    params = tail_parameters_for_split(split_layer)
-    # some layers (ReLU, Flatten) have no params; that's ok
-    return optim.SGD(params, lr=lr, momentum=momentum)
+# FIX: Commented out obsolete segmented optimizer logic to maintain your original file structure.
+# def tail_parameters_for_split(split_layer: int):
+#     params = []
+#     for i in range(split_layer + 1, len(model.layers)):
+#         params += list(model.layers[i].parameters())
+#     return params
+# tail_opts = {}
+# def get_tail_optimizer(split_layer, lr=0.01, momentum=0.9):
+#     if split_layer not in tail_opts:
+#         tail_opts[split_layer] = make_tail_optimizer(split_layer, lr=lr, momentum=momentum)
+#     return tail_opts[split_layer]
+# def make_tail_optimizer(split_layer: int, lr=0.01, momentum=0.9):
+#     params = tail_parameters_for_split(split_layer)
+#     return optim.SGD(params, lr=lr, momentum=momentum)
 
 def load_dataset_on_clients():
     with clients_lock:
@@ -698,78 +735,134 @@ def request_head_weights(ids, smax: int, timeout=20):
     return head_payloads
 
 
+def broadcast_global_head(ids, smax: int):
+    sd = model.state_dict()
+    head_sd = {k: v.cpu() for k, v in sd.items() if is_key_upto_layer(k, smax)}
+    for cid in ids:
+        send_to_client(cid, "SET_GLOBAL_HEAD", {"smax": smax, "state_dict": head_sd})
+
+TOTAL_ROUNDS=1#increase for actual training
+
 def orchestration_loop():
     # SETUP FOLDERS
     if not os.path.exists("results"):
         os.makedirs("results")
         print("[SYSTEM] Created 'results' directory for benchmark data.")
 
-    #INITIALIZE MODEL & WAIT FOR CLIENTS FIRST
+    # INITIALIZE MODEL & WAIT FOR CLIENTS
     reset_everything(n_clients=5)
 
     # PRE-TRAIN ATTACKERS
     if ENABLE_ATTACK:
         print("\n[MALICIOUS SERVER] Pre-training Hacker Models...")
-        # Simulate a client split at layer 5 to pre-train our baseline heuristics
         simulated_client = ExactClientArchitecture(model, split_layer=5).to(next(model.parameters()).device)
         pretrain_hacker_decoder(hacker_decoder, simulated_client, epochs=1)
         pretrain_hacker_mia(hacker_mia, simulated_client, epochs=1)
     
-    #load data and train
     load_dataset_on_server()
     load_dataset_on_clients()
-
-    ids = wait_for_n_clients(5)
+    
+    # Allow time for clients to finish loading data
+    time.sleep(2)
+    with clients_lock:
+        ids = list(clients.keys())
     assign_shards_to_clients(ids)
 
-    epochs = 1 # increase to 10 to 15 for research
-    
-    # Initialize the maximum privacy budget (Table sent to clients)
+    # Sync initial weights
+    print("\n[SERVER] Broadcasting initial global weights to clients...", flush=True)
+    broadcast_global_head(ids, Smax)
+    for cid in ids:
+        wait_for(cid, "SET_GLOBAL_HEAD_OK", timeout=10)
+
+    # 🚨 FIX: Initialize the noise table BEFORE entering the loop
     current_noise_table = get_initial_noise_table()
 
     # =================================================================
-    # AUTOMATED BI-LEVEL OPTIMIZATION LOOP
+    # FIXED-EPOCH TRAINING LOOP
     # =================================================================
-    while True:
+    for round_idx in range(TOTAL_ROUNDS):
         print(f"\n=======================================================")
-        print(f"[SERVER] STARTING P3SL OPTIMIZATION ROUND")
+        print(f"[SERVER] STARTING ROUND {round_idx + 1}/{TOTAL_ROUNDS}")
         print(f"=======================================================")
         
-        for ep in range(epochs):
-            with clients_lock:
-                for cid in ids:
-                    clients[cid]["config"]["step"] = 0
-                    random.shuffle(clients[cid]["config"]["shard_indices"]) 
-            active = set(ids)
-            while active:
-                for cid in list(active):
-                    # Pass the noise table to the training step
-                    ok = run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30)
-                    if not ok:
-                        active.remove(cid)
+        # Train
+        with clients_lock:
+            for cid in ids:
+                clients[cid]["config"]["step"] = 0
+                random.shuffle(clients[cid]["config"]["shard_indices"]) 
+        active = set(ids)
+        while active:
+            for cid in list(active):
+                # Pass current_noise_table safely
+                ok = run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30)
+                if not ok:
+                    active.remove(cid)
 
-        print("[SERVER] Training round done. Aggregating models...")
-
-        # Aggregate Models
+        # Aggregate
         head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
         aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
-        print("[SERVER] ✅ Aggregation done", flush=True)
         
-        # Evaluate Accuracy
-        current_accuracy = evaluate_global_accuracy()
+        # Decay Noise Linearly
+        decay_factor = 1.0 - ((round_idx + 1) / TOTAL_ROUNDS)
+        current_noise_table = {k: v * decay_factor for k, v in current_noise_table.items()}
         
-        # Update the Noise Table (Automated Bi-Level Optimization)
-        current_noise_table = update_noise_table(current_noise_table, current_accuracy)
+        # Track Progress
+        # Evaluate Utility
+        acc = evaluate_global_accuracy()
+        utility_log_data.append([round_idx + 1, acc])
+        print(f"[SERVER] Round {round_idx+1} complete. Accuracy: {acc:.2f}%")
 
-        # Break the loop if we hit our target!
-        if current_accuracy >= TARGET_ACCURACY:
-            print("\n[SERVER] 🚀 P3SL AUTOMATION COMPLETE! SWEET SPOT FOUND!")
+    print("\n[SERVER] 🚀 TRAINING COMPLETE! Max rounds reached.")
+    torch.save(model.state_dict(), '/data/p3sl_final_model.pth')
+    # Save Utility Graphs
+    save_utility_graphs(utility_log_data)
+    
+    # Initialize the maximum privacy budget (Table sent to clients)
+    # current_noise_table = get_initial_noise_table()
+
+    # # =================================================================
+    # # AUTOMATED BI-LEVEL OPTIMIZATION LOOP
+    # # =================================================================
+    # while True:
+    #     print(f"\n=======================================================")
+    #     print(f"[SERVER] STARTING P3SL OPTIMIZATION ROUND")
+    #     print(f"=======================================================")
+        
+    #     for ep in range(epochs):
+    #         with clients_lock:
+    #             for cid in ids:
+    #                 clients[cid]["config"]["step"] = 0
+    #                 random.shuffle(clients[cid]["config"]["shard_indices"]) 
+    #         active = set(ids)
+    #         while active:
+    #             for cid in list(active):
+    #                 # Pass the noise table to the training step
+    #                 ok = run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30)
+    #                 if not ok:
+    #                     active.remove(cid)
+
+    #     print("[SERVER] Training round done. Aggregating models...")
+
+    #     # Aggregate Models
+    #     head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
+    #     aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
+    #     print("[SERVER] ✅ Aggregation done", flush=True)
+        
+    #     # Evaluate Accuracy
+    #     current_accuracy = evaluate_global_accuracy()
+        
+    #     # Update the Noise Table (Automated Bi-Level Optimization)
+    #     current_noise_table = update_noise_table(current_noise_table, current_accuracy)
+
+    #     # Break the loop if we hit our target!
+    #     if current_accuracy >= TARGET_ACCURACY:
+    #         print("\n[SERVER] 🚀 P3SL AUTOMATION COMPLETE! SWEET SPOT FOUND!")
             
-            # ---> THIS SAVES YOUR WORK PERMANENTLY <---
-            torch.save(model.state_dict(), '/data/p3sl_final_model.pth')
-            print("[SERVER] 💾 Model weights saved safely to your dataset folder!")
+    #         # ---> THIS SAVES YOUR WORK PERMANENTLY <---
+    #         torch.save(model.state_dict(), '/data/p3sl_final_model.pth')
+    #         print("[SERVER] 💾 Model weights saved safely to your dataset folder!")
             
-            break
+    #         break
 
     # ==========================================
     # 🚨 OFFLINE TASKS & GRAPHING 🚨
@@ -832,13 +925,24 @@ def orchestration_loop():
         plt.close() 
         print("\n[MALICIOUS SERVER] Benchmark complete! All data saved in the 'results' folder.")
 
+def save_utility_graphs(utility_log_data):
+    utility_csv_path = os.path.join("results", "model_utility_log.csv")
+    with open(utility_csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Round", "Global_Accuracy"])
+        writer.writerows(utility_log_data)
+        
+    rounds = [row[0] for row in utility_log_data]
+    accuracies = [row[1] for row in utility_log_data]
 
-def broadcast_global_head(ids, smax: int):
-    sd = model.state_dict()
-    head_sd = {k: v.cpu() for k, v in sd.items() if is_key_upto_layer(k, smax)}
-    for cid in ids:
-        send_to_client(cid, "SET_GLOBAL_HEAD", {"smax": smax, "state_dict": head_sd})
-
+    plt.figure(figsize=(6, 5))
+    plt.plot(rounds, accuracies, label="Global Model Accuracy", color="green", marker='o')
+    plt.title("Model Training Utility")
+    plt.xlabel("Training Rounds")
+    plt.ylabel("Accuracy (%)")
+    plt.grid(True)
+    plt.savefig("results/model_utility_graph.png")
+    plt.close()
 
 def set_hyperparameters():
     pass
