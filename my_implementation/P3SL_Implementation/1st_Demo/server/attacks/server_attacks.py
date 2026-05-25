@@ -21,8 +21,8 @@ class InversionDecoder(nn.Module):
         flattened_reconstruction = self.decode(intercepted_ir)
         return flattened_reconstruction.view(-1, 1, 28, 28)
 
-def pretrain_hacker_decoder(decoder, known_client_model, epochs=1):# increase to 10 to 15 for research
-    print("\n[HACKER MODULE] Pre-training Decoder on Public Data...")
+def pretrain_hacker_decoder(decoder, known_client_model, epochs=5):
+    print(f"\n[HACKER MODULE] Pre-training Decoder on Public Data ({epochs} epochs)...")
     device = next(known_client_model.parameters()).device
     decoder.to(device)
     
@@ -71,7 +71,7 @@ def total_variation_loss(img):
     tv_w = torch.mean(torch.abs(img[:, :, :, 1:] - img[:, :, :, :-1]))
     return tv_h + tv_w
 
-def optimization_attack(intercepted_ir, known_client_model, iterations=10):# increase to 500 for research
+def optimization_attack(intercepted_ir, known_client_model, iterations=200):
     device = intercepted_ir.device
     
     # EXACT WHITEBOX: Dummy image is initialized as a 2D spatial tensor
@@ -112,7 +112,7 @@ class MembershipInferenceClassifier(nn.Module):
     def forward(self, intercepted_ir):
         return self.classifier(intercepted_ir)
 
-def pretrain_hacker_mia(mia_classifier, known_client_model, epochs=1):# increase to 10 to 15 for research
+def pretrain_hacker_mia(mia_classifier, known_client_model, epochs=5):
     print("\n[HACKER MODULE] Pre-training MIA Shadow Classifier...")
     device = next(known_client_model.parameters()).device
     mia_classifier.to(device)
