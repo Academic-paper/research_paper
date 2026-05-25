@@ -1,0 +1,46 @@
+# Tiny configuration used to verify the pipeline end-to-end on a CPU laptop
+# (≈ 1 minute total runtime, 5 clients × 2 rounds × 1 epoch each).
+defaults:
+  num_clients: 5
+  rounds: 2
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.05
+  momentum: 0.9
+  grad_clip: 1.0
+  device: cpu
+  iid: true
+  log_every: 1
+  split_points: [2, 5, 6, 9, 10]
+  data_subset: 2000     # only keep 2k training samples → smoke test runs in seconds
+
+dataset: fashionmnist
+alphas: [0.1, 0.3, 0.5, 0.7, 0.9]
+seeds: [42]
+attack_epochs: 1
+opt_attack_iters: 20
+
+runs:
+  - name: p3sl_laplace_smoke
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.3
+      sigma_decay: 0.95
+      sensitivity: 5.0
+      target_accuracy: 75.0
+
+  - name: vanilla_sl_smoke
+    config:
+      mode: vanilla_sl
+      dp_mechanism: none
+      sigma_init: 0.0
+      fixed_split_layer: 6
+    run_attacks: false
+
+  - name: central_smoke
+    config:
+      mode: central
+      dp_mechanism: none
+      sigma_init: 0.0
+    run_attacks: false

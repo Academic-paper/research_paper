@@ -1,0 +1,77 @@
+
+=================  vanilla_sl_laplace_seed42  =================
+[round 3/15] acc=48.10% loss=1.5557 σ̄=0.500 mean_split=6.0
+[round 6/15] acc=62.21% loss=1.2099 σ̄=0.500 mean_split=6.0
+[round 9/15] acc=69.21% loss=1.0248 σ̄=0.500 mean_split=6.0
+[round 12/15] acc=71.82% loss=0.8912 σ̄=0.500 mean_split=6.0
+[round 15/15] acc=73.53% loss=0.8380 σ̄=0.500 mean_split=6.0
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0390
+   [decoder] epoch 2/2 loss=0.0254
+   [mia] epoch 1/2 loss=0.6938
+   [mia] epoch 2/2 loss=0.6932
+[attacks] running optimisation-based reconstruction…
+[done] vanilla_sl_laplace_seed42: acc=73.53% ε=30.000 (194.3s)
+
+=================  p3sl_laplace_low_seed42  =================
+[round 3/15] acc=48.64% loss=1.4793 σ̄=0.282 mean_split=5.8
+[round 6/15] acc=61.04% loss=1.2200 σ̄=0.258 mean_split=5.8
+[round 9/15] acc=68.82% loss=1.0305 σ̄=0.235 mean_split=5.8
+[round 12/15] acc=71.22% loss=0.9014 σ̄=0.215 mean_split=5.8
+[round 15/15] acc=73.75% loss=0.8190 σ̄=0.196 mean_split=5.8
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0393
+   [decoder] epoch 2/2 loss=0.0254
+   [mia] epoch 1/2 loss=0.6936
+   [mia] epoch 2/2 loss=0.6931
+[attacks] running optimisation-based reconstruction…
+[done] p3sl_laplace_low_seed42: acc=73.75% ε=50.000 (200.1s)
+
+=================  p3sl_laplace_med_seed42  =================
+[round 3/15] acc=36.15% loss=1.8651 σ̄=0.903 mean_split=5.8
+[round 6/15] acc=46.45% loss=1.4336 σ̄=0.774 mean_split=5.8
+[round 9/15] acc=51.20% loss=1.2886 σ̄=0.663 mean_split=5.8
+[round 12/15] acc=58.18% loss=1.1539 σ̄=0.569 mean_split=5.8
+[round 15/15] acc=68.21% loss=0.9970 σ̄=0.488 mean_split=5.8
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0400
+   [decoder] epoch 2/2 loss=0.0258
+   [mia] epoch 1/2 loss=0.6937
+   [mia] epoch 2/2 loss=0.6931
+[attacks] running optimisation-based reconstruction…
+[done] p3sl_laplace_med_seed42: acc=68.21% ε=15.000 (199.5s)
+
+=================  p3sl_laplace_high_seed42  =================
+[round 3/15] acc=19.14% loss=2.0524 σ̄=1.730 mean_split=5.8
+[round 6/15] acc=35.64% loss=1.7110 σ̄=1.391 mean_split=5.8
+[round 9/15] acc=47.35% loss=1.4082 σ̄=1.119 mean_split=5.8
+[round 12/15] acc=49.31% loss=1.3057 σ̄=0.900 mean_split=5.8
+[round 15/15] acc=61.23% loss=1.1825 σ̄=0.724 mean_split=5.8
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0413
+   [decoder] epoch 2/2 loss=0.0262
+   [mia] epoch 1/2 loss=0.6938
+   [mia] epoch 2/2 loss=0.6932
+[attacks] running optimisation-based reconstruction…
+[done] p3sl_laplace_high_seed42: acc=61.23% ε=7.500 (200.7s)
+
+=================  p3sl_gaussian_seed42  =================
+[round 3/15] acc=47.50% loss=1.5000 σ̄=0.451 mean_split=5.8
+[round 6/15] acc=63.28% loss=1.2346 σ̄=0.387 mean_split=5.8
+[round 9/15] acc=69.24% loss=1.0407 σ̄=0.332 mean_split=5.8
+[round 12/15] acc=71.55% loss=0.9032 σ̄=0.284 mean_split=5.8
+[round 15/15] acc=74.11% loss=0.8207 σ̄=0.244 mean_split=5.8
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0393
+   [decoder] epoch 2/2 loss=0.0254
+   [mia] epoch 1/2 loss=0.6937
+   [mia] epoch 2/2 loss=0.6931
+[attacks] running optimisation-based reconstruction…
+[done] p3sl_gaussian_seed42: acc=74.11% ε=67.188 (227.7s)
+
+[runner] saved 5 runs to /Users/kavya.malviya/Downloads/BTP-1/research_paper/research/results

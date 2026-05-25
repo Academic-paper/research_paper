@@ -1,0 +1,67 @@
+
+=================  central_upper_bound_seed42  =================
+[central round 1/15] acc=63.62%
+[central round 2/15] acc=64.38%
+[central round 3/15] acc=71.24%
+[central round 4/15] acc=75.75%
+[central round 5/15] acc=75.62%
+[central round 6/15] acc=79.46%
+[central round 7/15] acc=80.59%
+[central round 8/15] acc=82.01%
+[central round 9/15] acc=81.75%
+[central round 10/15] acc=80.80%
+[central round 11/15] acc=81.71%
+[central round 12/15] acc=81.96%
+[central round 13/15] acc=84.30%
+[central round 14/15] acc=83.90%
+[central round 15/15] acc=84.83%
+[done] central_upper_bound_seed42: acc=84.83% ε=inf (196.7s)
+
+=================  fedavg_no_dp_seed42  =================
+[round 3/15] acc=58.45% loss=1.3563 σ̄=0.000 mean_split=17.0
+[round 6/15] acc=69.43% loss=1.0685 σ̄=0.000 mean_split=17.0
+[round 9/15] acc=71.43% loss=0.8876 σ̄=0.000 mean_split=17.0
+[round 12/15] acc=74.26% loss=0.8237 σ̄=0.000 mean_split=17.0
+[round 15/15] acc=75.56% loss=0.7415 σ̄=0.000 mean_split=17.0
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0394
+   [decoder] epoch 2/2 loss=0.0252
+   [mia] epoch 1/2 loss=0.6938
+   [mia] epoch 2/2 loss=0.6932
+[attacks] running optimisation-based reconstruction…
+[done] fedavg_no_dp_seed42: acc=75.56% ε=inf (197.6s)
+
+=================  vanilla_sl_no_dp_seed42  =================
+[round 3/15] acc=58.45% loss=1.3563 σ̄=0.000 mean_split=6.0
+[round 6/15] acc=69.43% loss=1.0685 σ̄=0.000 mean_split=6.0
+[round 9/15] acc=71.43% loss=0.8876 σ̄=0.000 mean_split=6.0
+[round 12/15] acc=74.26% loss=0.8237 σ̄=0.000 mean_split=6.0
+[round 15/15] acc=75.56% loss=0.7415 σ̄=0.000 mean_split=6.0
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0394
+   [decoder] epoch 2/2 loss=0.0252
+   [mia] epoch 1/2 loss=0.6938
+   [mia] epoch 2/2 loss=0.6932
+[attacks] running optimisation-based reconstruction…
+[done] vanilla_sl_no_dp_seed42: acc=75.56% ε=inf (197.8s)
+
+=================  vanilla_sl_laplace_seed42  =================
+[round 3/15] acc=10.00% loss=2.3407 σ̄=0.500 mean_split=6.0
+[round 6/15] acc=10.00% loss=2.3185 σ̄=0.500 mean_split=6.0
+[round 9/15] acc=10.00% loss=2.3129 σ̄=0.500 mean_split=6.0
+[round 12/15] acc=10.00% loss=2.3106 σ̄=0.500 mean_split=6.0
+[round 15/15] acc=8.16% loss=2.3079 σ̄=0.500 mean_split=6.0
+[attacks] training adversary models on a public split…
+[attacks] eval_split=5, IR shape per sample=(32, 28, 28)
+   [decoder] epoch 1/2 loss=0.0495
+   [decoder] epoch 2/2 loss=0.0317
+   [mia] epoch 1/2 loss=0.6937
+   [mia] epoch 2/2 loss=0.6932
+[attacks] running optimisation-based reconstruction…
+[done] vanilla_sl_laplace_seed42: acc=8.16% ε=150.000 (204.1s)
+
+=================  p3sl_laplace_low_seed42  =================
+[round 3/15] acc=15.10% loss=2.3500 σ̄=0.282 mean_split=5.8
+[round 6/15] acc=10.00% loss=2.3307 σ̄=0.258 mean_split=5.8

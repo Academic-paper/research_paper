@@ -1,0 +1,94 @@
+# Full benchmark — produces every figure/table the paper needs.
+# Runtime: ≈ 30 minutes on a CPU laptop, < 5 minutes on a GPU.
+
+defaults:
+  num_clients: 5
+  rounds: 30
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.01
+  momentum: 0.9
+  grad_clip: 1.0
+  device: cpu
+  iid: true
+  log_every: 5
+  split_points: [2, 5, 6, 9, 10, 13]
+
+dataset: fashionmnist
+alphas: [0.1, 0.3, 0.5, 0.7, 0.9]
+seeds: [42, 1, 7]
+attack_epochs: 5
+opt_attack_iters: 200
+
+runs:
+  # ---- P3SL with different DP mechanisms / noise levels ----
+  - name: p3sl_laplace_sigma_low
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.5
+      sigma_decay: 0.97
+      target_accuracy: 80.0
+
+  - name: p3sl_laplace_sigma_med
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 1.5
+      sigma_decay: 0.95
+      target_accuracy: 80.0
+
+  - name: p3sl_laplace_sigma_high
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 2.5
+      sigma_decay: 0.93
+      target_accuracy: 80.0
+
+  - name: p3sl_gaussian
+    config:
+      mode: p3sl
+      dp_mechanism: gaussian
+      sigma_init: 1.5
+      sigma_decay: 0.95
+      target_accuracy: 80.0
+
+  # ---- Baselines ----
+  - name: vanilla_sl_no_dp
+    config:
+      mode: vanilla_sl
+      dp_mechanism: none
+      sigma_init: 0.0
+      fixed_split_layer: 6
+
+  - name: vanilla_sl_laplace
+    config:
+      mode: vanilla_sl
+      dp_mechanism: laplace
+      sigma_init: 1.5
+      fixed_split_layer: 6
+
+  - name: fedavg_no_dp
+    config:
+      mode: fedavg
+      dp_mechanism: none
+      sigma_init: 0.0
+
+  - name: central_upper_bound
+    config:
+      mode: central
+      dp_mechanism: none
+      sigma_init: 0.0
+    run_attacks: false
+
+  # ---- Non-IID stress test ----
+  - name: p3sl_noniid_dirichlet
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 1.5
+      sigma_decay: 0.95
+      iid: false
+      dirichlet_alpha: 0.5
+      target_accuracy: 75.0

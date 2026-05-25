@@ -1,0 +1,48 @@
+{
+  "name": "central_upper_bound_seed1",
+  "dataset": "fashionmnist",
+  "config": {
+    "mode": "central",
+    "num_clients": 5,
+    "rounds": 25,
+    "local_epochs": 1,
+    "batch_size": 64,
+    "lr": 0.05,
+    "momentum": 0.9,
+    "grad_clip": 1.0,
+    "seed": 1,
+    "device": "cpu",
+    "dp_mechanism": "none",
+    "sigma_init": 0.0,
+    "sensitivity": 1.0,
+    "dp_clip": false,
+    "sigma_decay": 0.95,
+    "target_accuracy": 80.0,
+    "sigma_floor": 0.0,
+    "split_points": [
+      2,
+      5,
+      6,
+      9,
+      10
+    ],
+    "fixed_split_layer": 6,
+    "iid": true,
+    "dirichlet_alpha": 0.5,
+    "log_every": 5,
+    "record_per_client": true,
+    "data_subset": 30000
+  },
+  "alphas": [
+    0.1,
+    0.3,
+    0.5,
+    0.7,
+    0.9
+  ],
+  "final_accuracy": 91.26,
+  "rounds_run": 25,
+  "train_seconds": 3529.223941087723,
+  "epsilon_total": Infinity,
+  "delta": 0.0
+}

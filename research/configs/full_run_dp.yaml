@@ -1,0 +1,74 @@
+# DP-only re-run with clipping disabled.
+#
+# The original config used per-sample L1 clipping (formal DP) which destroys
+# utility on a 32×28×28 = 25,088-dim feature map (signal-per-coord ≈ 0.0002,
+# noise-per-coord ≈ 0.5 → SNR ≈ 1/2500). For this benchmark we follow the
+# original P3SL paper and add noise without clipping; ε is reported as an
+# *upper bound*. Set `dp_clip: true` for runs where you need a formal proof.
+
+defaults:
+  num_clients: 5
+  rounds: 15
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.05
+  momentum: 0.9
+  grad_clip: 1.0
+  device: cpu
+  iid: true
+  log_every: 3
+  split_points: [2, 5, 6, 9, 10]
+  data_subset: 10000
+  dp_clip: false           # << heuristic noise, no per-sample clipping
+  sensitivity: 1.0         # only used for ε reporting
+
+dataset: fashionmnist
+alphas: [0.1, 0.3, 0.5, 0.7, 0.9]
+seeds: [42]
+attack_epochs: 2
+opt_attack_iters: 60
+
+runs:
+  # Vanilla split learning + Laplace DP (fixed split, fixed sigma) ------------
+  - name: vanilla_sl_laplace
+    config:
+      mode: vanilla_sl
+      dp_mechanism: laplace
+      sigma_init: 0.5
+      fixed_split_layer: 6
+
+  # P3SL — low noise (privacy-utility sweet spot) -----------------------------
+  - name: p3sl_laplace_low
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.3
+      sigma_decay: 0.97
+      target_accuracy: 80.0
+
+  # P3SL — medium noise -------------------------------------------------------
+  - name: p3sl_laplace_med
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 1.0
+      sigma_decay: 0.95
+      target_accuracy: 80.0
+
+  # P3SL — high noise (strong privacy) ----------------------------------------
+  - name: p3sl_laplace_high
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 2.0
+      sigma_decay: 0.93
+      target_accuracy: 80.0
+
+  # P3SL — Gaussian DP --------------------------------------------------------
+  - name: p3sl_gaussian
+    config:
+      mode: p3sl
+      dp_mechanism: gaussian
+      sigma_init: 0.5
+      sigma_decay: 0.95
+      target_accuracy: 80.0

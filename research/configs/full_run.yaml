@@ -1,0 +1,97 @@
+# "Good results" benchmark — sized so it completes on a CPU laptop in ~30 min.
+# Uses a 10k subset of FashionMNIST × 15 rounds × 1 seed.
+# Once these numbers look right you can swap in `main.yaml` for the full
+# 60k × 30 rounds × 3 seeds run.
+
+defaults:
+  num_clients: 5
+  rounds: 15
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.05
+  momentum: 0.9
+  grad_clip: 1.0
+  device: cpu
+  iid: true
+  log_every: 3
+  split_points: [2, 5, 6, 9, 10]
+  data_subset: 10000
+
+dataset: fashionmnist
+alphas: [0.1, 0.3, 0.5, 0.7, 0.9]
+seeds: [42]
+attack_epochs: 2
+opt_attack_iters: 60
+
+runs:
+  # Centralised upper bound (no SL, no DP) ------------------------------------
+  - name: central_upper_bound
+    config:
+      mode: central
+      dp_mechanism: none
+      sigma_init: 0.0
+    run_attacks: false
+
+  # Federated averaging (no SL, no DP) ----------------------------------------
+  - name: fedavg_no_dp
+    config:
+      mode: fedavg
+      dp_mechanism: none
+      sigma_init: 0.0
+
+  # Vanilla split learning, no DP ---------------------------------------------
+  - name: vanilla_sl_no_dp
+    config:
+      mode: vanilla_sl
+      dp_mechanism: none
+      sigma_init: 0.0
+      fixed_split_layer: 6
+
+  # Vanilla split learning + Laplace DP (fixed split, fixed sigma) ------------
+  - name: vanilla_sl_laplace
+    config:
+      mode: vanilla_sl
+      dp_mechanism: laplace
+      sigma_init: 0.5
+      sensitivity: 5.0
+      fixed_split_layer: 6
+
+  # P3SL — low noise (privacy-utility sweet spot) -----------------------------
+  - name: p3sl_laplace_low
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.3
+      sigma_decay: 0.97
+      sensitivity: 5.0
+      target_accuracy: 80.0
+
+  # P3SL — medium noise -------------------------------------------------------
+  - name: p3sl_laplace_med
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.7
+      sigma_decay: 0.95
+      sensitivity: 5.0
+      target_accuracy: 80.0
+
+  # P3SL — high noise (strong privacy) ----------------------------------------
+  - name: p3sl_laplace_high
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 1.5
+      sigma_decay: 0.93
+      sensitivity: 5.0
+      target_accuracy: 80.0
+
+  # P3SL — Gaussian DP (alternative mechanism for the Pareto plot) ------------
+  - name: p3sl_gaussian
+    config:
+      mode: p3sl
+      dp_mechanism: gaussian
+      sigma_init: 0.7
+      sigma_decay: 0.95
+      sensitivity: 5.0
+      target_accuracy: 80.0

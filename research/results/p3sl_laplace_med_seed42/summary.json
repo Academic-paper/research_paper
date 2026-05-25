@@ -1,0 +1,72 @@
+{
+  "name": "p3sl_laplace_med_seed42",
+  "dataset": "fashionmnist",
+  "config": {
+    "mode": "p3sl",
+    "num_clients": 5,
+    "rounds": 25,
+    "local_epochs": 1,
+    "batch_size": 64,
+    "lr": 0.05,
+    "momentum": 0.9,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "device": "cpu",
+    "dp_mechanism": "laplace",
+    "sigma_init": 1.0,
+    "sensitivity": 1.0,
+    "dp_clip": false,
+    "sigma_decay": 0.95,
+    "target_accuracy": 80.0,
+    "sigma_floor": 0.0,
+    "split_points": [
+      2,
+      5,
+      6,
+      9,
+      10
+    ],
+    "fixed_split_layer": 6,
+    "iid": true,
+    "dirichlet_alpha": 0.5,
+    "log_every": 5,
+    "record_per_client": true,
+    "data_subset": 30000
+  },
+  "alphas": [
+    0.1,
+    0.3,
+    0.5,
+    0.7,
+    0.9
+  ],
+  "final_accuracy": 83.55,
+  "rounds_run": 25,
+  "train_seconds": 9582.252473115921,
+  "epsilon_total": 25.0,
+  "delta": 0.0,
+  "decoder_metrics": {
+    "mse": 0.021434420719742775,
+    "psnr": 16.688882491078015,
+    "ssim": 0.8718050122261047,
+    "fsim": 0.7814571857452393,
+    "lpips": NaN,
+    "nn_id_acc": 0.625
+  },
+  "optimization_metrics": {
+    "mse": 0.029605142772197723,
+    "psnr": 15.286328401713028,
+    "ssim": 0.8809657096862793,
+    "fsim": 0.797359824180603,
+    "lpips": NaN,
+    "nn_id_acc": 0.96875
+  },
+  "mia": {
+    "auc": 0.500274658203125,
+    "balanced_acc": 0.4912109375,
+    "tpr_at_fpr_0.1": 0.12890625
+  },
+  "clean_accuracy": 83.55,
+  "backdoor_asr": 0.8666666666666667,
+  "eval_split_layer": 5
+}

@@ -1,0 +1,72 @@
+{
+  "name": "fedavg_no_dp_seed1",
+  "dataset": "fashionmnist",
+  "config": {
+    "mode": "fedavg",
+    "num_clients": 5,
+    "rounds": 25,
+    "local_epochs": 1,
+    "batch_size": 64,
+    "lr": 0.05,
+    "momentum": 0.9,
+    "grad_clip": 1.0,
+    "seed": 1,
+    "device": "cpu",
+    "dp_mechanism": "none",
+    "sigma_init": 0.0,
+    "sensitivity": 1.0,
+    "dp_clip": false,
+    "sigma_decay": 0.95,
+    "target_accuracy": 80.0,
+    "sigma_floor": 0.0,
+    "split_points": [
+      2,
+      5,
+      6,
+      9,
+      10
+    ],
+    "fixed_split_layer": 6,
+    "iid": true,
+    "dirichlet_alpha": 0.5,
+    "log_every": 5,
+    "record_per_client": true,
+    "data_subset": 30000
+  },
+  "alphas": [
+    0.1,
+    0.3,
+    0.5,
+    0.7,
+    0.9
+  ],
+  "final_accuracy": 87.55,
+  "rounds_run": 25,
+  "train_seconds": 11868.989591121674,
+  "epsilon_total": Infinity,
+  "delta": 0.0,
+  "decoder_metrics": {
+    "mse": 0.022538019344210625,
+    "psnr": 16.470842526943358,
+    "ssim": 0.8681778907775879,
+    "fsim": 0.7693001627922058,
+    "lpips": NaN,
+    "nn_id_acc": 0.5625
+  },
+  "optimization_metrics": {
+    "mse": 0.026327082887291908,
+    "psnr": 15.79597259243223,
+    "ssim": 0.8937890529632568,
+    "fsim": 0.8046228885650635,
+    "lpips": NaN,
+    "nn_id_acc": 0.984375
+  },
+  "mia": {
+    "auc": 0.4986991882324219,
+    "balanced_acc": 0.4873046875,
+    "tpr_at_fpr_0.1": 0.11328125
+  },
+  "clean_accuracy": 87.55,
+  "backdoor_asr": 0.7222222222222222,
+  "eval_split_layer": 5
+}

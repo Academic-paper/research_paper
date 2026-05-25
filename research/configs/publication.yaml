@@ -1,0 +1,88 @@
+# Publication-grade benchmark.
+#
+# 30 000-sample stratified subset of FashionMNIST × 25 rounds × 3 seeds.
+# 6 configurations covering central upper-bound, FedAvg, vanilla SL, vanilla
+# SL+DP, P3SL+Laplace (two noise levels), P3SL+Gaussian.
+#
+# Estimated wall-clock on an 8-core CPU: ≈ 3–4 hours.
+# (Set `data_subset: 0` and `seeds: [42, 1, 7]` for the absolute final run on
+#  full 60k FashionMNIST; that takes ≈ 8 hours.)
+
+defaults:
+  num_clients: 5
+  rounds: 25
+  local_epochs: 1
+  batch_size: 64
+  lr: 0.05
+  momentum: 0.9
+  grad_clip: 1.0
+  device: cpu
+  iid: true
+  log_every: 5
+  split_points: [2, 5, 6, 9, 10]
+  data_subset: 30000
+  dp_clip: false
+  sensitivity: 1.0
+
+dataset: fashionmnist
+alphas: [0.1, 0.3, 0.5, 0.7, 0.9]
+seeds: [42, 1, 7]
+attack_epochs: 3
+opt_attack_iters: 100
+
+runs:
+  # ---- Upper bound ----------------------------------------------------------
+  - name: central_upper_bound
+    config:
+      mode: central
+      dp_mechanism: none
+      sigma_init: 0.0
+    run_attacks: false
+
+  # ---- No-DP baselines ------------------------------------------------------
+  - name: fedavg_no_dp
+    config:
+      mode: fedavg
+      dp_mechanism: none
+      sigma_init: 0.0
+
+  - name: vanilla_sl_no_dp
+    config:
+      mode: vanilla_sl
+      dp_mechanism: none
+      sigma_init: 0.0
+      fixed_split_layer: 6
+
+  # ---- Vanilla SL + DP ------------------------------------------------------
+  - name: vanilla_sl_laplace
+    config:
+      mode: vanilla_sl
+      dp_mechanism: laplace
+      sigma_init: 0.5
+      fixed_split_layer: 6
+
+  # ---- P3SL Laplace ---------------------------------------------------------
+  - name: p3sl_laplace_low
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 0.3
+      sigma_decay: 0.97
+      target_accuracy: 80.0
+
+  - name: p3sl_laplace_med
+    config:
+      mode: p3sl
+      dp_mechanism: laplace
+      sigma_init: 1.0
+      sigma_decay: 0.95
+      target_accuracy: 80.0
+
+  # ---- P3SL Gaussian --------------------------------------------------------
+  - name: p3sl_gaussian
+    config:
+      mode: p3sl
+      dp_mechanism: gaussian
+      sigma_init: 0.5
+      sigma_decay: 0.95
+      target_accuracy: 80.0
