@@ -18,7 +18,7 @@ import csv
 from torchvision.utils import save_image
 
 from attacks.server_attacks import InversionDecoder, optimization_attack, MembershipInferenceClassifier
-from attacks.metrics import calculate_fsim
+from attacks.metrics import calculate_fsim, calculate_all
 from attacks.server_attacks import pretrain_hacker_decoder, pretrain_hacker_mia
 
 # 1. ENFORCING REPRODUCIBILITY
@@ -36,9 +36,8 @@ utility_log_data = []
 # =====================================================================
 # P3SL: SERVER-SIDE BI-LEVEL OPTIMIZATION (NOISE MANAGEMENT)
 # =====================================================================
-
-# TARGET_ACCURACY = 90.0  # Amin from the paper: Minimum acceptable accuracy
-MAX_SPLIT_LAYER = 10    # Smax from the paper
+TARGET_ACCURACY = float(os.environ.get("P3SL_TARGET_ACCURACY", "80.0"))
+MAX_SPLIT_LAYER = int(os.environ.get("P3SL_MAX_SPLIT_LAYER", "10"))   # Smax from the paper
 
 
 def get_initial_noise_table():
@@ -589,8 +588,9 @@ def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=3
         # ATTACK 1: WHITEBOX DECODER
         with torch.no_grad():
             reconstructed_image = hacker_decoder(stolen_ir_attack)
-            current_fsim = calculate_fsim(real_images_reshaped.cpu(), reconstructed_image.cpu())
-            
+            recon_metrics = calculate_all(real_images_reshaped.cpu(), reconstructed_image.cpu())
+            current_fsim = recon_metrics["fsim"]
+
             # Save visual proofs
             if batch_counter % 50 == 0:
                 comparison = torch.cat([real_images_reshaped[:8], reconstructed_image[:8]])
@@ -609,8 +609,15 @@ def run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=3
             mia_predictions = hacker_mia(stolen_ir_attack)
             avg_confidence = mia_predictions.mean().item()
 
-        # Log metrics
-        csv_log_data.append([batch_counter, current_fsim, avg_confidence])
+        csv_log_data.append([
+            batch_counter,
+            recon_metrics["fsim"],
+            recon_metrics["ssim"],
+            recon_metrics["psnr"],
+            recon_metrics["mse"],
+            recon_metrics["nn_id_acc"],
+            avg_confidence,
+        ])
     # ==========================================
 
     # 3) server gets labels by deterministic indexing
@@ -741,7 +748,9 @@ def broadcast_global_head(ids, smax: int):
     for cid in ids:
         send_to_client(cid, "SET_GLOBAL_HEAD", {"smax": smax, "state_dict": head_sd})
 
-TOTAL_ROUNDS=1#increase for actual training
+TOTAL_ROUNDS = int(os.environ.get("P3SL_TOTAL_ROUNDS", "30"))
+PRETRAIN_EPOCHS = int(os.environ.get("P3SL_PRETRAIN_EPOCHS", "5"))
+OPT_ATTACK_ITERS = int(os.environ.get("P3SL_OPT_ATTACK_ITERS", "200"))
 
 def orchestration_loop():
     # SETUP FOLDERS
@@ -754,10 +763,10 @@ def orchestration_loop():
 
     # PRE-TRAIN ATTACKERS
     if ENABLE_ATTACK:
-        print("\n[MALICIOUS SERVER] Pre-training Hacker Models...")
+        print(f"\n[MALICIOUS SERVER] Pre-training Hacker Models for {PRETRAIN_EPOCHS} epochs...")
         simulated_client = ExactClientArchitecture(model, split_layer=5).to(next(model.parameters()).device)
-        pretrain_hacker_decoder(hacker_decoder, simulated_client, epochs=1)
-        pretrain_hacker_mia(hacker_mia, simulated_client, epochs=1)
+        pretrain_hacker_decoder(hacker_decoder, simulated_client, epochs=PRETRAIN_EPOCHS)
+        pretrain_hacker_mia(hacker_mia, simulated_client, epochs=PRETRAIN_EPOCHS)
     
     load_dataset_on_server()
     load_dataset_on_clients()
@@ -778,22 +787,21 @@ def orchestration_loop():
     current_noise_table = get_initial_noise_table()
 
     # =================================================================
-    # FIXED-EPOCH TRAINING LOOP
+    # P3SL BI-LEVEL TRAINING LOOP
     # =================================================================
     for round_idx in range(TOTAL_ROUNDS):
         print(f"\n=======================================================")
         print(f"[SERVER] STARTING ROUND {round_idx + 1}/{TOTAL_ROUNDS}")
         print(f"=======================================================")
-        
+
         # Train
         with clients_lock:
             for cid in ids:
                 clients[cid]["config"]["step"] = 0
-                random.shuffle(clients[cid]["config"]["shard_indices"]) 
+                random.shuffle(clients[cid]["config"]["shard_indices"])
         active = set(ids)
         while active:
             for cid in list(active):
-                # Pass current_noise_table safely
                 ok = run_train_step_for_client(cid, current_noise_table, batch_size=64, timeout=30)
                 if not ok:
                     active.remove(cid)
@@ -801,20 +809,20 @@ def orchestration_loop():
         # Aggregate
         head_payloads = request_head_weights(ids, smax=Smax, timeout=30)
         aggregate_p3sl_uniform(head_payloads, smax=Smax, N_expected=len(ids))
-        
-        # Decay Noise Linearly
-        decay_factor = 1.0 - ((round_idx + 1) / TOTAL_ROUNDS)
-        current_noise_table = {k: v * decay_factor for k, v in current_noise_table.items()}
-        
-        # Track Progress
+
         # Evaluate Utility
         acc = evaluate_global_accuracy()
         utility_log_data.append([round_idx + 1, acc])
-        print(f"[SERVER] Round {round_idx+1} complete. Accuracy: {acc:.2f}%")
+        print(f"[SERVER] Round {round_idx + 1} complete. Accuracy: {acc:.2f}%")
 
-    print("\n[SERVER] 🚀 TRAINING COMPLETE! Max rounds reached.")
+        current_noise_table = update_noise_table(current_noise_table, acc)
+
+        if acc >= TARGET_ACCURACY:
+            print(f"\n[SERVER] Target accuracy {TARGET_ACCURACY:.1f}% reached. Stopping early.")
+            break
+
+    print(f"\n[SERVER] Training complete. Final accuracy: {utility_log_data[-1][1]:.2f}%")
     torch.save(model.state_dict(), '/data/p3sl_final_model.pth')
-    # Save Utility Graphs
     save_utility_graphs(utility_log_data)
     
     # Initialize the maximum privacy budget (Table sent to clients)
@@ -873,7 +881,12 @@ def orchestration_loop():
         csv_path = os.path.join("results", "attack_metrics_log.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Batch", "Decoder_FSIM", "MIA_Confidence"])
+            writer.writerow([
+                "Batch",
+                "Decoder_FSIM", "Decoder_SSIM", "Decoder_PSNR",
+                "Decoder_MSE", "Decoder_NN_ID",
+                "MIA_Confidence",
+            ])
             writer.writerows(csv_log_data)
             
         print(f" -> Running heavy Optimization Attack on {len(offline_attack_queue)} saved batches...")
@@ -889,7 +902,7 @@ def orchestration_loop():
             exact_client_model.eval() # <-- CRITICAL FOR WHITEBOX CNN ATTACKS
             
             # Run the pure white-box attack!
-            optimized_img = optimization_attack(ir_target, exact_client_model, iterations=50)
+            optimized_img = optimization_attack(ir_target, exact_client_model, iterations=OPT_ATTACK_ITERS)
             
             opt_fsim = calculate_fsim(real_img, optimized_img.cpu())
             print(f"    Batch {i+1}: Optimizer FSIM: {opt_fsim:.4f}")
@@ -900,7 +913,7 @@ def orchestration_loop():
         print(" -> Generating benchmark graphs...")
         batches = [row[0] for row in csv_log_data]
         fsim_scores = [row[1] for row in csv_log_data]
-        mia_scores = [row[2] for row in csv_log_data]
+        mia_scores = [row[6] for row in csv_log_data]
 
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
